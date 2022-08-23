@@ -9,6 +9,7 @@ package mr
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 )
 
@@ -41,9 +42,19 @@ type MRResultReply struct {
 }
 
 const IntermediateFilePrefix string = "MR"
+const OutputFilePrefix string = "mr-out"
 
 func getIntermediateFileName(mapIndex int, reduceIndex int) string {
 	return fmt.Sprintf("%s-%d-%d", IntermediateFilePrefix, mapIndex, reduceIndex)
+}
+
+func getAllFilesForReduce(reduceIndex int) (matches []string, err error) {
+	s := fmt.Sprintf("%s-*-%d", IntermediateFilePrefix, reduceIndex)
+	return filepath.Glob(s)
+}
+
+func getOutputFileName(reduceIndex int) string {
+	return fmt.Sprintf("%s-%d", OutputFilePrefix, reduceIndex)
 }
 
 // Cook up a unique-ish UNIX-domain socket name
