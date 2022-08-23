@@ -7,13 +7,15 @@ import (
 	"net/rpc"
 	"os"
 	"sync"
+	"time"
 )
 
 type Coordinator struct {
 	// Your definitions here.
-	files                []string
-	nReduce              int
-	unallocatedForMap    int
+	files             []string
+	nReduce           int
+	unallocatedForMap int
+	// todo better to use orderedmap since we have to deal with all by time and erase any
 	failedForMap         []int
 	excutingForMap       map[int]int
 	unallocatedForReduce int
@@ -61,6 +63,19 @@ func (c *Coordinator) assignMapTaskNL(reply *MRTaskReply) {
 
 	reply.FileName = c.files[reply.TaskNumber]
 	c.excutingForMap[reply.TaskNumber] = 1
+
+	go c.dealWithMapTaskTimeout(reply.ReduceNumber)
+}
+
+func (c *Coordinator) dealWithMapTaskTimeout(index int) {
+	time.Sleep(10 * time.Second)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.isMapTaskExecutingNL(index) {
+		c.dealWithMapResultNL(index, false)
+	}
 }
 
 func (c *Coordinator) assignWaitTaskNL(reply *MRTaskReply) {
@@ -80,6 +95,19 @@ func (c *Coordinator) assignReduceTaskNL(reply *MRTaskReply) {
 	}
 
 	c.excutingForReduce[reply.TaskNumber] = 1
+
+	go c.dealWithReduceTaskTimeout(reply.ReduceNumber)
+}
+
+func (c *Coordinator) dealWithReduceTaskTimeout(index int) {
+	time.Sleep(10 * time.Second)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.isReduceTaskExecutingNL(index) {
+		c.dealWithReduceResultNL(index, false)
+	}
 }
 
 func (c *Coordinator) assignExitTaskNL(reply *MRTaskReply) {
@@ -124,12 +152,40 @@ func (c *Coordinator) canAssignMapTaskNL() bool {
 	return c.unallocatedForMap != len(c.files) || len(c.failedForMap) != 0
 }
 
+func (c *Coordinator) isMapTaskExecutingNL(mapIndex int) bool {
+	for _, index := range c.failedForMap {
+		if index == mapIndex {
+			return true
+		}
+	}
+
+	if _, ok := c.excutingForMap[mapIndex]; ok {
+		return true
+	}
+
+	return false
+}
+
 func (c *Coordinator) getReduceFinishedNL() bool {
 	return c.unallocatedForReduce == c.nReduce && len(c.failedForReduce) == 0 && len(c.excutingForReduce) == 0
 }
 
 func (c *Coordinator) canAssignReduceTaskNL() bool {
 	return c.unallocatedForReduce != c.nReduce || len(c.failedForReduce) != 0
+}
+
+func (c *Coordinator) isReduceTaskExecutingNL(reduceIndex int) bool {
+	for _, index := range c.failedForReduce {
+		if index == reduceIndex {
+			return true
+		}
+	}
+
+	if _, ok := c.excutingForReduce[reduceIndex]; ok {
+		return true
+	}
+
+	return false
 }
 
 //
