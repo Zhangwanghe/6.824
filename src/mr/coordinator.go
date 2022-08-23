@@ -6,11 +6,18 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"sync"
 )
 
 type Coordinator struct {
 	// Your definitions here.
-
+	files                []string
+	nReduce              int
+	unallocatedForMap    int
+	failedForMap         []int
+	unallocatedForReduce int
+	failedForReduce      []int
+	mu                   sync.Mutex
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -22,6 +29,30 @@ type Coordinator struct {
 //
 func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
 	reply.Y = args.X + 1
+	return nil
+}
+
+// NL denotes Not Lock
+func (c *Coordinator) getMapFinishedNL() bool {
+	return c.unallocatedForMap == len(c.files) && len(c.failedForMap) == 0
+}
+
+func (c *Coordinator) getReduceFinishedNL() bool {
+	return c.unallocatedForReduce == c.nReduce && len(c.failedForReduce) == 0
+}
+
+func (c *Coordinator) GetTask(args *MRArgs, reply *MRReply) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.getMapFinishedNL() {
+		reply.TaskType = MapTask
+	} else if !c.getReduceFinishedNL() {
+		reply.TaskType = ReduceTask
+	} else {
+		reply.TaskType = ExitTask
+	}
+
 	return nil
 }
 
@@ -48,7 +79,11 @@ func (c *Coordinator) server() {
 func (c *Coordinator) Done() bool {
 	ret := false
 
-	// Your code here.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.getReduceFinishedNL() {
+		ret = true
+	}
 
 	return ret
 }
@@ -59,7 +94,14 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
+	c := Coordinator{
+		files:                files,
+		nReduce:              nReduce,
+		unallocatedForMap:    0,
+		failedForMap:         make([]int, 0),
+		unallocatedForReduce: 0,
+		failedForReduce:      make([]int, 0),
+	}
 
 	// Your code here.
 

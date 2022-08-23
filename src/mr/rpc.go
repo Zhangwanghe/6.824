@@ -29,13 +29,14 @@ type ExampleReply struct {
 const (
 	MapTask = iota
 	ReduceTask
+	ExitTask
 )
 
 type MRArgs struct {
 }
 
 type MRReply struct {
-	taskType int
+	TaskType int
 }
 
 // Cook up a unique-ish UNIX-domain socket name

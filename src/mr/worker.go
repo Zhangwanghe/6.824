@@ -5,7 +5,6 @@ import (
 	"hash/fnv"
 	"log"
 	"net/rpc"
-	"os"
 )
 
 //
@@ -36,7 +35,23 @@ func Worker(mapf func(string, string) []KeyValue,
 
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
-
+	for {
+		args := MRArgs{}
+		reply := MRReply{}
+		ok := call("Coordinator.GetTask", &args, &reply)
+		if ok {
+			switch {
+			case reply.TaskType == MapTask:
+				fmt.Print("recieve map task")
+			case reply.TaskType == ReduceTask:
+				fmt.Print("recieve map task")
+			case reply.TaskType == ExitTask:
+				break
+			}
+		} else {
+			break
+		}
+	}
 }
 
 //
@@ -65,22 +80,6 @@ func CallExample() {
 		fmt.Printf("reply.Y %v\n", reply.Y)
 	} else {
 		fmt.Printf("call failed!\n")
-	}
-}
-
-func GetTask() {
-	args := MRArgs{}
-	reply := MRReply{}
-	ok := call("Coordinator.GetTask", &args, &reply)
-	if ok {
-		switch {
-		case reply.taskType == MapTask:
-			fmt.Print("recieve map task")
-		case reply.taskType = ReduceTask:
-			fmt.Print("recieve map task")
-		}
-	} else {
-		os.Exit(0)
 	}
 }
 
