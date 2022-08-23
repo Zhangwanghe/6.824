@@ -34,9 +34,8 @@ func (c *Coordinator) GetTask(args *MRTaskArgs, reply *MRTaskReply) error {
 		} else {
 			c.assignWaitTaskNL(reply)
 		}
-
 	} else if !c.getReduceFinishedNL() {
-		reply.TaskType = ReduceTask
+		c.assignReduceTaskNL(reply)
 	} else {
 		reply.TaskType = ExitTask
 	}
@@ -62,6 +61,21 @@ func (c *Coordinator) assignMapTaskNL(reply *MRTaskReply) {
 
 func (c *Coordinator) assignWaitTaskNL(reply *MRTaskReply) {
 	reply.TaskType = WaitTask
+}
+
+func (c *Coordinator) assignReduceTaskNL(reply *MRTaskReply) {
+	reply.TaskType = ReduceTask
+
+	if len(c.failedForMap) != 0 {
+		reply.TaskNumber = c.failedForMap[0]
+		c.failedForMap = c.failedForMap[1:]
+	} else {
+		reply.TaskNumber = c.unallocatedForMap
+		c.unallocatedForMap += 1
+	}
+
+	reply.FileName = c.files[reply.TaskNumber]
+	c.excutingForMap = append(c.excutingForMap, reply.TaskNumber)
 }
 
 func (c *Coordinator) WriteResult(args *MRResultArgs, reply *MRResultReply) error {
@@ -97,7 +111,11 @@ func (c *Coordinator) canAssignMapTaskNL() bool {
 }
 
 func (c *Coordinator) getReduceFinishedNL() bool {
-	return c.unallocatedForReduce == c.nReduce && len(c.failedForReduce) == 0
+	return c.unallocatedForReduce == c.nReduce && len(c.failedForReduce) == 0 && len(c.excutingForReduce) == 0
+}
+
+func (c *Coordinator) canAssignReduceTaskNL() bool {
+	return c.unallocatedForReduce != len(c.files) || len(c.failedForReduce) != 0
 }
 
 //
