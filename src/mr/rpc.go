@@ -17,6 +17,7 @@ import (
 const (
 	MapTask = iota
 	ReduceTask
+	WaitTask
 	ExitTask
 )
 
@@ -26,7 +27,7 @@ type MRTaskArgs struct {
 type MRTaskReply struct {
 	TaskType     int
 	ReduceNumber int
-	TaskNumebr   int
+	TaskNumber   int
 	FileName     string
 }
 

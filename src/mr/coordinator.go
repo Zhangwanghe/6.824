@@ -15,8 +15,10 @@ type Coordinator struct {
 	nReduce              int
 	unallocatedForMap    int
 	failedForMap         []int
+	excutingForMap       []int
 	unallocatedForReduce int
 	failedForReduce      []int
+	excutingForReduce    []int
 	mu                   sync.Mutex
 }
 
@@ -27,16 +29,12 @@ func (c *Coordinator) GetTask(args *MRTaskArgs, reply *MRTaskReply) error {
 
 	// todo deal with wait when map tasks are not all finished but all assigned
 	if !c.getMapFinishedNL() {
-		reply.ReduceNumber = c.nReduce
-		reply.TaskType = MapTask
-		if len(c.failedForMap) != 0 {
-			reply.TaskNumebr = c.failedForMap[0]
-			c.failedForMap = c.failedForMap[1:]
+		if c.canAssignMapTaskNL() {
+			c.assignMapTaskNL(reply)
 		} else {
-			reply.TaskNumebr = c.unallocatedForMap
-			c.unallocatedForMap += 1
+			c.assignWaitTaskNL(reply)
 		}
-		reply.FileName = c.files[reply.TaskNumebr]
+
 	} else if !c.getReduceFinishedNL() {
 		reply.TaskType = ReduceTask
 	} else {
@@ -46,32 +44,56 @@ func (c *Coordinator) GetTask(args *MRTaskArgs, reply *MRTaskReply) error {
 	return nil
 }
 
+func (c *Coordinator) assignMapTaskNL(reply *MRTaskReply) {
+	reply.ReduceNumber = c.nReduce
+	reply.TaskType = MapTask
+
+	if len(c.failedForMap) != 0 {
+		reply.TaskNumber = c.failedForMap[0]
+		c.failedForMap = c.failedForMap[1:]
+	} else {
+		reply.TaskNumber = c.unallocatedForMap
+		c.unallocatedForMap += 1
+	}
+
+	reply.FileName = c.files[reply.TaskNumber]
+	c.excutingForMap = append(c.excutingForMap, reply.TaskNumber)
+}
+
+func (c *Coordinator) assignWaitTaskNL(reply *MRTaskReply) {
+	reply.TaskType = WaitTask
+}
+
 func (c *Coordinator) WriteResult(args *MRResultArgs, reply *MRResultReply) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	switch {
 	case args.TaskType == MapTask:
-		c.dealWithMapResult(args.TaskNumber, args.Result)
+		c.dealWithMapResultNL(args.TaskNumber, args.Result)
 	case args.TaskType == ReduceTask:
-		c.dealWithReduceResult(args.TaskNumber, args.Result)
+		c.dealWithReduceResultNL(args.TaskNumber, args.Result)
 	}
 	return nil
 }
 
-func (c *Coordinator) dealWithMapResult(mapIndex int, result bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+func (c *Coordinator) dealWithMapResultNL(mapIndex int, result bool) {
 	if !result {
 		c.failedForMap = append(c.failedForMap, mapIndex)
 	}
 }
 
-func (c *Coordinator) dealWithReduceResult(mapIndex int, result bool) {
+func (c *Coordinator) dealWithReduceResultNL(mapIndex int, result bool) {
 
 }
 
 // NL denotes Not Lock
 func (c *Coordinator) getMapFinishedNL() bool {
-	return c.unallocatedForMap == len(c.files) && len(c.failedForMap) == 0
+	return c.unallocatedForMap == len(c.files) && len(c.failedForMap) == 0 && len(c.excutingForMap) == 0
+}
+
+func (c *Coordinator) canAssignMapTaskNL() bool {
+	return c.unallocatedForMap != len(c.files) || len(c.failedForMap) != 0
 }
 
 func (c *Coordinator) getReduceFinishedNL() bool {

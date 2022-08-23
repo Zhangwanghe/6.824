@@ -46,7 +46,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		if ok {
 			switch {
 			case reply.TaskType == MapTask:
-				ret = dealWithMapTask(mapf, reply.ReduceNumber, reply.FileName, reply.TaskNumebr)
+				ret = dealWithMapTask(mapf, reply.ReduceNumber, reply.FileName, reply.TaskNumber)
 			case reply.TaskType == ReduceTask:
 				dealWithReduceTask(reducef, &reply)
 			case reply.TaskType == ExitTask:
@@ -56,7 +56,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			return
 		}
 
-		if !writeBack(reply.TaskType, reply.TaskNumebr, ret) {
+		if !writeBack(reply.TaskType, reply.TaskNumber, ret) {
 			return
 		}
 	}
