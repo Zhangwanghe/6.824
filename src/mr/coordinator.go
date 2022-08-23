@@ -15,10 +15,10 @@ type Coordinator struct {
 	nReduce              int
 	unallocatedForMap    int
 	failedForMap         []int
-	excutingForMap       []int
+	excutingForMap       map[int]int
 	unallocatedForReduce int
 	failedForReduce      []int
-	excutingForReduce    []int
+	excutingForReduce    map[int]int
 	mu                   sync.Mutex
 }
 
@@ -56,7 +56,7 @@ func (c *Coordinator) assignMapTaskNL(reply *MRTaskReply) {
 	}
 
 	reply.FileName = c.files[reply.TaskNumber]
-	c.excutingForMap = append(c.excutingForMap, reply.TaskNumber)
+	c.excutingForMap[reply.TaskNumber] = 1
 }
 
 func (c *Coordinator) assignWaitTaskNL(reply *MRTaskReply) {
@@ -64,6 +64,7 @@ func (c *Coordinator) assignWaitTaskNL(reply *MRTaskReply) {
 }
 
 func (c *Coordinator) assignReduceTaskNL(reply *MRTaskReply) {
+	// todo
 	reply.TaskType = ReduceTask
 
 	if len(c.failedForMap) != 0 {
@@ -75,7 +76,6 @@ func (c *Coordinator) assignReduceTaskNL(reply *MRTaskReply) {
 	}
 
 	reply.FileName = c.files[reply.TaskNumber]
-	c.excutingForMap = append(c.excutingForMap, reply.TaskNumber)
 }
 
 func (c *Coordinator) WriteResult(args *MRResultArgs, reply *MRResultReply) error {
@@ -95,6 +95,8 @@ func (c *Coordinator) dealWithMapResultNL(mapIndex int, result bool) {
 	if !result {
 		c.failedForMap = append(c.failedForMap, mapIndex)
 	}
+
+	delete(c.excutingForMap, mapIndex)
 }
 
 func (c *Coordinator) dealWithReduceResultNL(mapIndex int, result bool) {
@@ -162,8 +164,10 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		nReduce:              nReduce,
 		unallocatedForMap:    0,
 		failedForMap:         make([]int, 0),
+		excutingForMap:       make(map[int]int, 0),
 		unallocatedForReduce: 0,
 		failedForReduce:      make([]int, 0),
+		excutingForReduce:    make(map[int]int, 0),
 	}
 
 	c.server()
