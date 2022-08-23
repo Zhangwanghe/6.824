@@ -1,10 +1,12 @@
 package mr
 
-import "fmt"
-import "log"
-import "net/rpc"
-import "hash/fnv"
-
+import (
+	"fmt"
+	"hash/fnv"
+	"log"
+	"net/rpc"
+	"os"
+)
 
 //
 // Map functions return a slice of KeyValue.
@@ -23,7 +25,6 @@ func ihash(key string) int {
 	h.Write([]byte(key))
 	return int(h.Sum32() & 0x7fffffff)
 }
-
 
 //
 // main/mrworker.go calls this function.
@@ -64,6 +65,22 @@ func CallExample() {
 		fmt.Printf("reply.Y %v\n", reply.Y)
 	} else {
 		fmt.Printf("call failed!\n")
+	}
+}
+
+func GetTask() {
+	args := MRArgs{}
+	reply := MRReply{}
+	ok := call("Coordinator.GetTask", &args, &reply)
+	if ok {
+		switch {
+		case reply.taskType == MapTask:
+			fmt.Print("recieve map task")
+		case reply.taskType = ReduceTask:
+			fmt.Print("recieve map task")
+		}
+	} else {
+		os.Exit(0)
 	}
 }
 
