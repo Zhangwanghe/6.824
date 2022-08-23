@@ -20,18 +20,6 @@ type Coordinator struct {
 	mu                   sync.Mutex
 }
 
-// Your code here -- RPC handlers for the worker to call.
-
-//
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
-	return nil
-}
-
 // NL denotes Not Lock
 func (c *Coordinator) getMapFinishedNL() bool {
 	return c.unallocatedForMap == len(c.files) && len(c.failedForMap) == 0
@@ -41,6 +29,7 @@ func (c *Coordinator) getReduceFinishedNL() bool {
 	return c.unallocatedForReduce == c.nReduce && len(c.failedForReduce) == 0
 }
 
+// Your code here -- RPC handlers for the worker to call.
 func (c *Coordinator) GetTask(args *MRArgs, reply *MRReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
