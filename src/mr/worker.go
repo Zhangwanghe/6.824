@@ -56,7 +56,9 @@ func Worker(mapf func(string, string) []KeyValue,
 			return
 		}
 
-		writeBack(reply.TaskType, reply.TaskNumebr, ret)
+		if !writeBack(reply.TaskType, reply.TaskNumebr, ret) {
+			return
+		}
 	}
 }
 

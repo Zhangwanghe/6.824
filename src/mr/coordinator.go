@@ -30,12 +30,13 @@ func (c *Coordinator) GetTask(args *MRTaskArgs, reply *MRTaskReply) error {
 		reply.ReduceNumber = c.nReduce
 		reply.TaskType = MapTask
 		if len(c.failedForMap) != 0 {
-			reply.FileName = c.files[c.failedForMap[0]]
+			reply.TaskNumebr = c.failedForMap[0]
 			c.failedForMap = c.failedForMap[1:]
 		} else {
-			reply.FileName = c.files[c.unallocatedForMap]
+			reply.TaskNumebr = c.unallocatedForMap
 			c.unallocatedForMap += 1
 		}
+		reply.FileName = c.files[reply.TaskNumebr]
 	} else if !c.getReduceFinishedNL() {
 		reply.TaskType = ReduceTask
 	} else {
@@ -46,7 +47,26 @@ func (c *Coordinator) GetTask(args *MRTaskArgs, reply *MRTaskReply) error {
 }
 
 func (c *Coordinator) WriteResult(args *MRResultArgs, reply *MRResultReply) error {
+	switch {
+	case args.TaskType == MapTask:
+		c.dealWithMapResult(args.TaskNumber, args.Result)
+	case args.TaskType == ReduceTask:
+		c.dealWithReduceResult(args.TaskNumber, args.Result)
+	}
 	return nil
+}
+
+func (c *Coordinator) dealWithMapResult(mapIndex int, result bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !result {
+		c.failedForMap = append(c.failedForMap, mapIndex)
+	}
+}
+
+func (c *Coordinator) dealWithReduceResult(mapIndex int, result bool) {
+
 }
 
 // NL denotes Not Lock
