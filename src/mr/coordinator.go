@@ -20,15 +20,6 @@ type Coordinator struct {
 	mu                   sync.Mutex
 }
 
-// NL denotes Not Lock
-func (c *Coordinator) getMapFinishedNL() bool {
-	return c.unallocatedForMap == len(c.files) && len(c.failedForMap) == 0
-}
-
-func (c *Coordinator) getReduceFinishedNL() bool {
-	return c.unallocatedForReduce == c.nReduce && len(c.failedForReduce) == 0
-}
-
 // Your code here -- RPC handlers for the worker to call.
 func (c *Coordinator) GetTask(args *MRArgs, reply *MRReply) error {
 	c.mu.Lock()
@@ -43,6 +34,15 @@ func (c *Coordinator) GetTask(args *MRArgs, reply *MRReply) error {
 	}
 
 	return nil
+}
+
+// NL denotes Not Lock
+func (c *Coordinator) getMapFinishedNL() bool {
+	return c.unallocatedForMap == len(c.files) && len(c.failedForMap) == 0
+}
+
+func (c *Coordinator) getReduceFinishedNL() bool {
+	return c.unallocatedForReduce == c.nReduce && len(c.failedForReduce) == 0
 }
 
 //
@@ -83,6 +83,7 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
+	// Your code here.
 	c := Coordinator{
 		files:                files,
 		nReduce:              nReduce,
@@ -91,8 +92,6 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		unallocatedForReduce: 0,
 		failedForReduce:      make([]int, 0),
 	}
-
-	// Your code here.
 
 	c.server()
 	return &c

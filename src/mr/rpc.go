@@ -7,6 +7,7 @@ package mr
 //
 
 import (
+	"fmt"
 	"os"
 	"strconv"
 )
@@ -23,7 +24,16 @@ type MRArgs struct {
 }
 
 type MRReply struct {
-	TaskType int
+	TaskType     int
+	ReduceNumber int
+	TaskNumebr   int
+	FileName     string
+}
+
+const IntermediateFilePrefix string = "MR"
+
+func getIntermediateFileName(mapIndex int, reduceIndex int) string {
+	return fmt.Sprintf("%s-%d-%d", IntermediateFilePrefix, mapIndex, reduceIndex)
 }
 
 // Cook up a unique-ish UNIX-domain socket name
