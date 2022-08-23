@@ -25,8 +25,17 @@ func (c *Coordinator) GetTask(args *MRArgs, reply *MRReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// todo deal with wait when map tasks are not all finished but all assigned
 	if !c.getMapFinishedNL() {
+		reply.ReduceNumber = c.nReduce
 		reply.TaskType = MapTask
+		if len(c.failedForMap) != 0 {
+			reply.FileName = c.files[c.failedForMap[0]]
+			c.failedForMap = c.failedForMap[1:]
+		} else {
+			reply.FileName = c.files[c.unallocatedForMap]
+			c.unallocatedForMap += 1
+		}
 	} else if !c.getReduceFinishedNL() {
 		reply.TaskType = ReduceTask
 	} else {

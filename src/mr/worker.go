@@ -77,7 +77,7 @@ func dealWithMapTask(mapf func(string, string) []KeyValue,
 	kva := mapf(filename, string(content))
 	reduceIndexToKv := make(map[int][]KeyValue)
 	for _, kv := range kva {
-		index := ihash(kv.Key)
+		index := ihash(kv.Key) % nReduce
 		reduceIndexToKv[index] = append(reduceIndexToKv[index], kv)
 	}
 
@@ -92,7 +92,7 @@ func dealWithMapTask(mapf func(string, string) []KeyValue,
 		for _, kv := range kvs {
 			err := enc.Encode(&kv)
 			if err != nil {
-				fmt.Print("encode err")
+				log.Print("encode err")
 			}
 		}
 
