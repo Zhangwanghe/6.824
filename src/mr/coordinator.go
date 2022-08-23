@@ -21,7 +21,7 @@ type Coordinator struct {
 }
 
 // Your code here -- RPC handlers for the worker to call.
-func (c *Coordinator) GetTask(args *MRArgs, reply *MRReply) error {
+func (c *Coordinator) GetTask(args *MRTaskArgs, reply *MRTaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -42,6 +42,10 @@ func (c *Coordinator) GetTask(args *MRArgs, reply *MRReply) error {
 		reply.TaskType = ExitTask
 	}
 
+	return nil
+}
+
+func (c *Coordinator) WriteResult(args *MRResultArgs, reply *MRResultReply) error {
 	return nil
 }
 

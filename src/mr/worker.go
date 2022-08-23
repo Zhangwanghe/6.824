@@ -39,21 +39,24 @@ func Worker(mapf func(string, string) []KeyValue,
 	// uncomment to send the Example RPC to the coordinator.
 	// CallExample()
 	for {
-		args := MRArgs{}
-		reply := MRReply{}
+		args := MRTaskArgs{}
+		reply := MRTaskReply{}
 		ok := call("Coordinator.GetTask", &args, &reply)
+		ret := false
 		if ok {
 			switch {
 			case reply.TaskType == MapTask:
-				dealWithMapTask(mapf, reply.ReduceNumber, reply.FileName, reply.TaskNumebr)
+				ret = dealWithMapTask(mapf, reply.ReduceNumber, reply.FileName, reply.TaskNumebr)
 			case reply.TaskType == ReduceTask:
 				dealWithReduceTask(reducef, &reply)
 			case reply.TaskType == ExitTask:
-				break
+				return
 			}
 		} else {
-			break
+			return
 		}
+
+		writeBack(reply.TaskType, reply.TaskNumebr, ret)
 	}
 }
 
@@ -104,8 +107,15 @@ func dealWithMapTask(mapf func(string, string) []KeyValue,
 	return true
 }
 
-func dealWithReduceTask(reducef func(string, []string) string, reply *MRReply) {
+func dealWithReduceTask(reducef func(string, []string) string, reply *MRTaskReply) {
 
+}
+
+func writeBack(taskType int, taskNumber int, result bool) bool {
+	args := MRResultArgs{taskType, taskNumber, result}
+	reply := MRTaskReply{}
+	ok := call("Coordinator.WriteResult", &args, &reply)
+	return ok
 }
 
 //

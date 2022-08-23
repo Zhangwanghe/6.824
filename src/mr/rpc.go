@@ -20,14 +20,23 @@ const (
 	ExitTask
 )
 
-type MRArgs struct {
+type MRTaskArgs struct {
 }
 
-type MRReply struct {
+type MRTaskReply struct {
 	TaskType     int
 	ReduceNumber int
 	TaskNumebr   int
 	FileName     string
+}
+
+type MRResultArgs struct {
+	TaskType   int
+	TaskNumber int
+	Result     bool
+}
+
+type MRResultReply struct {
 }
 
 const IntermediateFilePrefix string = "MR"
