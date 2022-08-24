@@ -64,7 +64,7 @@ failed_any=0
 #########################################################
 # first word-count
 
-# generate the correct output
+# generate the correct output 
 ../mrsequential ../../mrapps/wc.so ../pg*txt || exit 1
 sort mr-out-0 > mr-correct-wc.txt
 rm -f mr-out*

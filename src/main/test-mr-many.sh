@@ -4,7 +4,7 @@ if [ $# -ne 1 ]; then
     echo "Usage: $0 numTrials"
     exit 1
 fi
-
+ 
 trap 'kill -INT -$pid; exit 1' INT
 
 # Note: because the socketID is based on the current userID,
