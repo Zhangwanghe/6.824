@@ -183,8 +183,16 @@ func dealWithReduceTask(reducef func(string, []string) string, reduceIndex int) 
 
 func writeBack(taskType int, taskNumber int, result bool) bool {
 	args := MRResultArgs{taskType, taskNumber, result}
-	reply := MRTaskReply{}
+	reply := MRResultReply{false}
 	ok := call("Coordinator.WriteResult", &args, &reply)
+	if ok && reply.DeleteFiles {
+		switch {
+		case taskType == MapTask:
+			clearFilesForMap(taskNumber)
+		case taskType == ReduceTask:
+			clearFilesForReduce(taskNumber)
+		}
+	}
 	return ok
 }
 

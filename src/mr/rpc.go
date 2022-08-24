@@ -39,6 +39,7 @@ type MRResultArgs struct {
 }
 
 type MRResultReply struct {
+	DeleteFiles bool
 }
 
 const IntermediateFilePrefix string = "MR"
@@ -55,6 +56,29 @@ func getAllFilesForReduce(reduceIndex int) (matches []string, err error) {
 
 func getOutputFileName(reduceIndex int) string {
 	return fmt.Sprintf("%s-%d", OutputFilePrefix, reduceIndex)
+}
+
+func clearFilesForMap(mapIndex int) {
+	s := fmt.Sprintf("%s-%d-*", IntermediateFilePrefix, mapIndex)
+	files, err := filepath.Glob(s)
+	if err != nil {
+		return
+	}
+
+	for _, filename := range files {
+		os.Remove(filename)
+	}
+}
+
+func clearFilesForReduce(reduceIndex int) {
+	files, err := getAllFilesForReduce(reduceIndex)
+	if err != nil {
+		return
+	}
+
+	for _, filename := range files {
+		os.Remove(filename)
+	}
 }
 
 // Cook up a unique-ish UNIX-domain socket name

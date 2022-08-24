@@ -122,7 +122,7 @@ func (c *Coordinator) WriteResult(args *MRResultArgs, reply *MRResultReply) erro
 	case args.TaskType == MapTask:
 		c.dealWithMapResultNL(args.TaskNumber, args.Result)
 	case args.TaskType == ReduceTask:
-		c.dealWithReduceResultNL(args.TaskNumber, args.Result)
+		reply.DeleteFiles = c.dealWithReduceResultNL(args.TaskNumber, args.Result)
 	}
 	return nil
 }
@@ -141,18 +141,22 @@ func (c *Coordinator) dealWithMapResultNL(mapIndex int, result bool) {
 	delete(c.excutingForMap, mapIndex)
 }
 
-func (c *Coordinator) dealWithReduceResultNL(reduceIndex int, result bool) {
+func (c *Coordinator) dealWithReduceResultNL(reduceIndex int, result bool) bool {
 	if _, ok := c.successForReduce[reduceIndex]; ok {
-		return
+		return false
 	}
 
+	ret := false
 	if !result {
 		c.failedForReduce = append(c.failedForReduce, reduceIndex)
 	} else {
 		c.successForReduce[reduceIndex] = 1
+		ret = true
 	}
 
 	delete(c.excutingForReduce, reduceIndex)
+
+	return ret
 }
 
 // NL denotes Not Lock
