@@ -18,9 +18,11 @@ type Coordinator struct {
 	// todo better to use orderedmap since we have to deal with all by time and erase any
 	failedForMap         []int
 	excutingForMap       map[int]int
+	successForMap        map[int]int
 	unallocatedForReduce int
 	failedForReduce      []int
 	excutingForReduce    map[int]int
+	successForReduce     map[int]int
 	mu                   sync.Mutex
 }
 
@@ -29,7 +31,6 @@ func (c *Coordinator) GetTask(args *MRTaskArgs, reply *MRTaskReply) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// todo deal with wait when map tasks are not all finished but all assigned
 	if !c.getMapFinishedNL() {
 		if c.canAssignMapTaskNL() {
 			c.assignMapTaskNL(reply)
@@ -73,7 +74,7 @@ func (c *Coordinator) dealWithMapTaskTimeout(index int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.isMapTaskExecutingNL(index) {
+	if c.isMapTaskSuccessNL(index) {
 		c.dealWithMapResultNL(index, false)
 	}
 }
@@ -83,7 +84,6 @@ func (c *Coordinator) assignWaitTaskNL(reply *MRTaskReply) {
 }
 
 func (c *Coordinator) assignReduceTaskNL(reply *MRTaskReply) {
-	// todo
 	reply.TaskType = ReduceTask
 
 	if len(c.failedForReduce) != 0 {
@@ -105,7 +105,7 @@ func (c *Coordinator) dealWithReduceTaskTimeout(index int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.isReduceTaskExecutingNL(index) {
+	if c.isReduceTaskSuccessNL(index) {
 		c.dealWithReduceResultNL(index, false)
 	}
 }
@@ -128,16 +128,28 @@ func (c *Coordinator) WriteResult(args *MRResultArgs, reply *MRResultReply) erro
 }
 
 func (c *Coordinator) dealWithMapResultNL(mapIndex int, result bool) {
+	if _, ok := c.successForMap[mapIndex]; ok {
+		return
+	}
+
 	if !result {
 		c.failedForMap = append(c.failedForMap, mapIndex)
+	} else {
+		c.successForMap[mapIndex] = 1
 	}
 
 	delete(c.excutingForMap, mapIndex)
 }
 
 func (c *Coordinator) dealWithReduceResultNL(reduceIndex int, result bool) {
+	if _, ok := c.successForReduce[reduceIndex]; ok {
+		return
+	}
+
 	if !result {
 		c.failedForReduce = append(c.failedForReduce, reduceIndex)
+	} else {
+		c.successForReduce[reduceIndex] = 1
 	}
 
 	delete(c.excutingForReduce, reduceIndex)
@@ -145,21 +157,15 @@ func (c *Coordinator) dealWithReduceResultNL(reduceIndex int, result bool) {
 
 // NL denotes Not Lock
 func (c *Coordinator) getMapFinishedNL() bool {
-	return c.unallocatedForMap == len(c.files) && len(c.failedForMap) == 0 && len(c.excutingForMap) == 0
+	return len(c.successForMap) == len(c.files)
 }
 
 func (c *Coordinator) canAssignMapTaskNL() bool {
 	return c.unallocatedForMap != len(c.files) || len(c.failedForMap) != 0
 }
 
-func (c *Coordinator) isMapTaskExecutingNL(mapIndex int) bool {
-	for _, index := range c.failedForMap {
-		if index == mapIndex {
-			return true
-		}
-	}
-
-	if _, ok := c.excutingForMap[mapIndex]; ok {
+func (c *Coordinator) isMapTaskSuccessNL(mapIndex int) bool {
+	if _, ok := c.successForMap[mapIndex]; ok {
 		return true
 	}
 
@@ -167,21 +173,15 @@ func (c *Coordinator) isMapTaskExecutingNL(mapIndex int) bool {
 }
 
 func (c *Coordinator) getReduceFinishedNL() bool {
-	return c.unallocatedForReduce == c.nReduce && len(c.failedForReduce) == 0 && len(c.excutingForReduce) == 0
+	return len(c.successForReduce) == c.nReduce
 }
 
 func (c *Coordinator) canAssignReduceTaskNL() bool {
 	return c.unallocatedForReduce != c.nReduce || len(c.failedForReduce) != 0
 }
 
-func (c *Coordinator) isReduceTaskExecutingNL(reduceIndex int) bool {
-	for _, index := range c.failedForReduce {
-		if index == reduceIndex {
-			return true
-		}
-	}
-
-	if _, ok := c.excutingForReduce[reduceIndex]; ok {
+func (c *Coordinator) isReduceTaskSuccessNL(reduceIndex int) bool {
+	if _, ok := c.successForMap[reduceIndex]; ok {
 		return true
 	}
 
@@ -232,10 +232,12 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		nReduce:              nReduce,
 		unallocatedForMap:    0,
 		failedForMap:         make([]int, 0),
-		excutingForMap:       make(map[int]int, 0),
+		excutingForMap:       make(map[int]int),
+		successForMap:        make(map[int]int),
 		unallocatedForReduce: 0,
 		failedForReduce:      make([]int, 0),
-		excutingForReduce:    make(map[int]int, 0),
+		excutingForReduce:    make(map[int]int),
+		successForReduce:     make(map[int]int),
 	}
 
 	c.server()
