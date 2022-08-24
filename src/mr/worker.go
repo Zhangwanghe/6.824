@@ -174,9 +174,8 @@ func dealWithReduceTask(reducef func(string, []string) string, reduceIndex int) 
 		i = j
 	}
 
+	outTempFile.Close()
 	os.Rename(outTempFile.Name(), getOutputFileName(reduceIndex))
-
-	// todo delete intermediate files who?
 
 	return true
 }
