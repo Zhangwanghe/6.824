@@ -65,7 +65,7 @@ func (c *Coordinator) assignMapTaskNL(reply *MRTaskReply) {
 	reply.FileName = c.files[reply.TaskNumber]
 	c.excutingForMap[reply.TaskNumber] = 1
 
-	go c.dealWithMapTaskTimeout(reply.ReduceNumber)
+	go c.dealWithMapTaskTimeout(reply.TaskNumber)
 }
 
 func (c *Coordinator) dealWithMapTaskTimeout(index int) {
@@ -74,7 +74,7 @@ func (c *Coordinator) dealWithMapTaskTimeout(index int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.isMapTaskSuccessNL(index) {
+	if !c.isMapTaskSuccessNL(index) {
 		c.dealWithMapResultNL(index, false)
 	}
 }
@@ -96,7 +96,7 @@ func (c *Coordinator) assignReduceTaskNL(reply *MRTaskReply) {
 
 	c.excutingForReduce[reply.TaskNumber] = 1
 
-	go c.dealWithReduceTaskTimeout(reply.ReduceNumber)
+	go c.dealWithReduceTaskTimeout(reply.TaskNumber)
 }
 
 func (c *Coordinator) dealWithReduceTaskTimeout(index int) {
@@ -105,7 +105,7 @@ func (c *Coordinator) dealWithReduceTaskTimeout(index int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.isReduceTaskSuccessNL(index) {
+	if !c.isReduceTaskSuccessNL(index) {
 		c.dealWithReduceResultNL(index, false)
 	}
 }
@@ -131,7 +131,6 @@ func (c *Coordinator) dealWithMapResultNL(mapIndex int, result bool) {
 	if _, ok := c.successForMap[mapIndex]; ok {
 		return
 	}
-
 	if !result {
 		c.failedForMap = append(c.failedForMap, mapIndex)
 	} else {
@@ -145,7 +144,6 @@ func (c *Coordinator) dealWithReduceResultNL(reduceIndex int, result bool) bool 
 	if _, ok := c.successForReduce[reduceIndex]; ok {
 		return false
 	}
-
 	ret := false
 	if !result {
 		c.failedForReduce = append(c.failedForReduce, reduceIndex)
@@ -185,7 +183,7 @@ func (c *Coordinator) canAssignReduceTaskNL() bool {
 }
 
 func (c *Coordinator) isReduceTaskSuccessNL(reduceIndex int) bool {
-	if _, ok := c.successForMap[reduceIndex]; ok {
+	if _, ok := c.successForReduce[reduceIndex]; ok {
 		return true
 	}
 
