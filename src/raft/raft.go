@@ -62,8 +62,8 @@ const (
 	Leader    Role = 3
 )
 
-const HeartBeatDuration = time.Duration(150)
-const CheckHeartBeatDuration = time.Duration(10)
+const HeartBeatDuration = time.Duration(150) * time.Millisecond
+const CheckHeartBeatDuration = time.Duration(10) * time.Millisecond
 
 type Raft struct {
 	mu                       sync.Mutex          // Lock to protect shared access to this peer's state
@@ -258,6 +258,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	term = rf.currentTerm
 	isLeader = rf.role == Leader
+	go rf.synchronize()
 
 	return index, term, isLeader
 }
@@ -289,17 +290,6 @@ func (rf *Raft) convertToCandidateNL() {
 	if rf.lastElectionTerm != rf.currentTerm {
 		go rf.ticker()
 	}
-}
-
-func (rf *Raft) convertToFollowerNL() {
-	rf.role = Follower
-	rf.votedFor = -1
-}
-
-func (rf *Raft) convertToLeaderNL() {
-	rf.role = Leader
-
-	go rf.heartBeat()
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -400,13 +390,54 @@ func (rf *Raft) isValidElectionNL(term int) bool {
 func (rf *Raft) heartBeatCheck() {
 	for rf.killed() == false {
 		rf.mu.Lock()
-		if rf.lastRecieveHeartBeatTime.Add(HeartBeatDuration).Before(time.Now()) && rf.role == Follower {
+		if rf.isHeartBeatTimeOutNL() {
 			rf.convertToCandidateNL()
 		}
 		rf.mu.Unlock()
 
-		time.Sleep(CheckHeartBeatDuration * time.Millisecond)
+		time.Sleep(CheckHeartBeatDuration)
 	}
+}
+
+func (rf *Raft) isHeartBeatTimeOutNL() bool {
+	return rf.lastRecieveHeartBeatTime.Add(HeartBeatDuration*2).Before(time.Now()) && rf.role == Follower
+}
+
+func (rf *Raft) convertToLeaderNL() {
+	rf.role = Leader
+	go rf.heartBeat()
+}
+
+func (rf *Raft) heartBeat() {
+	for {
+		rf.mu.Lock()
+
+		if rf.shouldHeartBeatNL() {
+			go rf.synchronize()
+		}
+		isLeader := rf.role == Leader
+
+		rf.mu.Unlock()
+
+		if !isLeader {
+			break
+		}
+
+		time.Sleep(CheckHeartBeatDuration)
+	}
+}
+
+func (rf *Raft) shouldHeartBeatNL() bool {
+	return rf.lastSendHeartBeatTime.Add(HeartBeatDuration).Before(time.Now())
+}
+
+func (rf *Raft) synchronize() {
+	rf.lastSendHeartBeatTime = time.Now()
+}
+
+func (rf *Raft) convertToFollowerNL() {
+	rf.role = Follower
+	rf.votedFor = -1
 }
 
 //
