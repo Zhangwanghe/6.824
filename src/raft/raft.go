@@ -228,11 +228,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// todo update commitIndex
 }
 
-func (rf *Raft) sendAppendEntries(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
-}
-
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -258,7 +253,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	term = rf.currentTerm
 	isLeader = rf.role == Leader
-	go rf.synchronize()
+	go rf.synchronize(term)
 
 	return index, term, isLeader
 }
@@ -369,7 +364,7 @@ func (rf *Raft) dealWithRequestVoteReply(term int, succeed *int, reply *RequestV
 			rf.convertToLeaderNL()
 			return false
 		}
-	} else if reply.Term > term {
+	} else if reply.Term > rf.currentTerm {
 		rf.currentTerm = term
 		rf.convertToFollowerNL()
 
@@ -413,7 +408,7 @@ func (rf *Raft) heartBeat() {
 		rf.mu.Lock()
 
 		if rf.shouldHeartBeatNL() {
-			go rf.synchronize()
+			go rf.synchronize(rf.currentTerm)
 		}
 		isLeader := rf.role == Leader
 
@@ -431,8 +426,60 @@ func (rf *Raft) shouldHeartBeatNL() bool {
 	return rf.lastSendHeartBeatTime.Add(HeartBeatDuration).Before(time.Now())
 }
 
-func (rf *Raft) synchronize() {
+func (rf *Raft) synchronize(term int) {
 	rf.lastSendHeartBeatTime = time.Now()
+
+	ch := make(chan AppendEntriesReply, len(rf.peers)-1)
+	for index, _ := range rf.peers {
+		if index == rf.me {
+			continue
+		}
+
+		go func(ch chan AppendEntriesReply, term int, index int) {
+			args := AppendEntriesArgs{term, rf.me}
+			reply := AppendEntriesReply{term, false}
+			rf.sendAppendEntries(index, &args, &reply)
+			ch <- reply
+		}(ch, term, index)
+	}
+
+	for reply := range ch {
+		ret := rf.dealWithAppendEntriesReply(term, &reply)
+		if !ret {
+			break
+		}
+	}
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
+
+func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply) bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if !rf.isValidAppendNL(term) {
+		return false
+	}
+
+	if reply.Term > rf.currentTerm {
+		rf.currentTerm = term
+		rf.convertToFollowerNL()
+
+		return false
+	}
+
+	return true
+}
+
+func (rf *Raft) isValidAppendNL(term int) bool {
+	if rf.currentTerm != term || rf.role != Leader {
+		return false
+	}
+
+	return true
 }
 
 func (rf *Raft) convertToFollowerNL() {
