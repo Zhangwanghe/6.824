@@ -62,15 +62,20 @@ const (
 	Leader    Role = 3
 )
 
+const HeartBeatDuration = time.Duration(150)
+const CheckHeartBeatDuration = time.Duration(10)
+
 type Raft struct {
-	mu          sync.Mutex          // Lock to protect shared access to this peer's state
-	peers       []*labrpc.ClientEnd // RPC end points of all peers
-	persister   *Persister          // Object to hold this peer's persisted state
-	me          int                 // this peer's index into peers[]
-	dead        int32               // set by Kill()
-	currentTerm int
-	role        Role
-	votedFor    int
+	mu                sync.Mutex          // Lock to protect shared access to this peer's state
+	peers             []*labrpc.ClientEnd // RPC end points of all peers
+	persister         *Persister          // Object to hold this peer's persisted state
+	me                int                 // this peer's index into peers[]
+	dead              int32               // set by Kill()
+	currentTerm       int
+	role              Role
+	votedFor          int
+	lastElectionTerm  int
+	lastHeartBeatTime time.Time
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -259,6 +264,7 @@ func (rf *Raft) ticker() {
 	rf.currentTerm++
 	term := rf.currentTerm
 	rf.votedFor = rf.me
+	rf.lastElectionTerm = term
 	rf.mu.Unlock()
 
 	for rf.killed() == false {
@@ -341,6 +347,25 @@ func (rf *Raft) isValidElectionNL(term int) bool {
 	return true
 }
 
+func (rf *Raft) heartBeatCheck() {
+	for rf.killed() == false {
+		rf.mu.Lock()
+		if rf.lastHeartBeatTime.Add(HeartBeatDuration).Before(time.Now()) && rf.role == Follower {
+			rf.convertToCandidateNL()
+		}
+		rf.mu.Unlock()
+
+		time.Sleep(CheckHeartBeatDuration * time.Millisecond)
+	}
+}
+
+func (rf *Raft) convertToCandidateNL() {
+	rf.role = Candidate
+	if rf.lastElectionTerm != rf.currentTerm {
+		go rf.ticker()
+	}
+}
+
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -359,6 +384,10 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.currentTerm = 0
+	rf.votedFor = -1
+	rf.lastElectionTerm = -1
+	rf.heartBeatTime = time.Now()
 
 	// Your initialization code here (2A, 2B, 2C).
 
@@ -366,7 +395,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
-	go rf.ticker()
+	rf.convertToCandidateNL()
+
+	go rf.heartBeatCheck()
 
 	return rf
 }
