@@ -66,16 +66,17 @@ const HeartBeatDuration = time.Duration(150)
 const CheckHeartBeatDuration = time.Duration(10)
 
 type Raft struct {
-	mu                sync.Mutex          // Lock to protect shared access to this peer's state
-	peers             []*labrpc.ClientEnd // RPC end points of all peers
-	persister         *Persister          // Object to hold this peer's persisted state
-	me                int                 // this peer's index into peers[]
-	dead              int32               // set by Kill()
-	currentTerm       int
-	role              Role
-	votedFor          int
-	lastElectionTerm  int
-	lastHeartBeatTime time.Time
+	mu                       sync.Mutex          // Lock to protect shared access to this peer's state
+	peers                    []*labrpc.ClientEnd // RPC end points of all peers
+	persister                *Persister          // Object to hold this peer's persisted state
+	me                       int                 // this peer's index into peers[]
+	dead                     int32               // set by Kill()
+	currentTerm              int
+	role                     Role
+	votedFor                 int
+	lastElectionTerm         int
+	lastRecieveHeartBeatTime time.Time
+	lastSendHeartBeatTime    time.Time
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -190,37 +191,45 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 }
 
+type AppendEntriesArgs struct {
+	// Your data here (2A, 2B).
+	Term     int
+	LeaderId int
+}
+
 //
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
+// example RequestVote RPC reply structure.
+// field names must start with capital letters!
 //
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-//
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+type AppendEntriesReply struct {
+	// Your data here (2A).
+	Term    int
+	Success bool
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	// Your code here (2A, 2B).z
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+
+	if args.Term < reply.Term {
+		reply.Success = false
+		return
+	}
+
+	// todo log conflicting and not containing
+
+	rf.lastRecieveHeartBeatTime = time.Now()
+
+	// todo append new entries
+
+	// todo update commitIndex
+}
+
+func (rf *Raft) sendAppendEntries(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
 	return ok
 }
 
@@ -325,6 +334,11 @@ func (rf *Raft) election(term int) {
 	}
 }
 
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	return ok
+}
+
 // return value denotes whether election is still valid
 func (rf *Raft) dealWithRequestVoteReply(term int, succeed *int, reply *RequestVoteReply) bool {
 	rf.mu.Lock()
@@ -362,7 +376,7 @@ func (rf *Raft) isValidElectionNL(term int) bool {
 func (rf *Raft) heartBeatCheck() {
 	for rf.killed() == false {
 		rf.mu.Lock()
-		if rf.lastHeartBeatTime.Add(HeartBeatDuration).Before(time.Now()) && rf.role == Follower {
+		if rf.lastRecieveHeartBeatTime.Add(HeartBeatDuration).Before(time.Now()) && rf.role == Follower {
 			rf.convertToCandidateNL()
 		}
 		rf.mu.Unlock()
@@ -382,6 +396,11 @@ func (rf *Raft) convertToCandidateNL() {
 func (rf *Raft) convertToFollowerNL() {
 	rf.role = Follower
 	rf.votedFor = -1
+}
+
+func (rf *Raft) convertToLeaderNL() {
+	rf.role = Leader
+
 }
 
 //
@@ -405,7 +424,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	rf.lastElectionTerm = -1
-	rf.heartBeatTime = time.Now()
+	rf.lastRecieveHeartBeatTime = time.Now()
+	rf.lastSendHeartBeatTime = time.Now()
 
 	// Your initialization code here (2A, 2B, 2C).
 
