@@ -176,6 +176,18 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).z
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+
+	if args.Term < reply.Term {
+		reply.VoteGranted = false
+	} else if rf.votedFor == -1 {
+		// todo check whether log is up-to-date
+		reply.VoteGranted = true
+		rf.votedFor = args.CandidateId
+	}
 }
 
 //
@@ -331,7 +343,7 @@ func (rf *Raft) dealWithRequestVoteReply(term int, succeed *int, reply *RequestV
 		}
 	} else if reply.Term > term {
 		rf.currentTerm = term
-		rf.role = Follower
+		rf.convertToFollowerNL()
 
 		return false
 	}
@@ -361,9 +373,15 @@ func (rf *Raft) heartBeatCheck() {
 
 func (rf *Raft) convertToCandidateNL() {
 	rf.role = Candidate
+	// todo check this condition
 	if rf.lastElectionTerm != rf.currentTerm {
 		go rf.ticker()
 	}
+}
+
+func (rf *Raft) convertToFollowerNL() {
+	rf.role = Follower
+	rf.votedFor = -1
 }
 
 //
