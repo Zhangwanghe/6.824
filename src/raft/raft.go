@@ -253,6 +253,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	term = rf.currentTerm
+	isLeader = rf.role == Leader
 
 	return index, term, isLeader
 }
@@ -276,6 +281,25 @@ func (rf *Raft) Kill() {
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
+}
+
+func (rf *Raft) convertToCandidateNL() {
+	rf.role = Candidate
+	// todo check this condition
+	if rf.lastElectionTerm != rf.currentTerm {
+		go rf.ticker()
+	}
+}
+
+func (rf *Raft) convertToFollowerNL() {
+	rf.role = Follower
+	rf.votedFor = -1
+}
+
+func (rf *Raft) convertToLeaderNL() {
+	rf.role = Leader
+
+	go rf.heartBeat()
 }
 
 // The ticker go routine starts a new election if this peer hasn't received
@@ -352,7 +376,7 @@ func (rf *Raft) dealWithRequestVoteReply(term int, succeed *int, reply *RequestV
 	if reply.VoteGranted {
 		*succeed++
 		if *succeed > len(rf.peers)/2 {
-			rf.role = Leader
+			rf.convertToLeaderNL()
 			return false
 		}
 	} else if reply.Term > term {
@@ -383,24 +407,6 @@ func (rf *Raft) heartBeatCheck() {
 
 		time.Sleep(CheckHeartBeatDuration * time.Millisecond)
 	}
-}
-
-func (rf *Raft) convertToCandidateNL() {
-	rf.role = Candidate
-	// todo check this condition
-	if rf.lastElectionTerm != rf.currentTerm {
-		go rf.ticker()
-	}
-}
-
-func (rf *Raft) convertToFollowerNL() {
-	rf.role = Follower
-	rf.votedFor = -1
-}
-
-func (rf *Raft) convertToLeaderNL() {
-	rf.role = Leader
-
 }
 
 //
