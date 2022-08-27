@@ -70,6 +70,7 @@ type Raft struct {
 	dead        int32               // set by Kill()
 	currentTerm int
 	role        Role
+	votedFor    int
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -254,22 +255,90 @@ func (rf *Raft) killed() bool {
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
+	rf.mu.Lock()
+	rf.currentTerm++
+	term := rf.currentTerm
+	rf.votedFor = rf.me
+	rf.mu.Unlock()
+
 	for rf.killed() == false {
 
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
+
+		go rf.election(term)
+
 		rf.mu.Lock()
-		role := rf.role
+		valid := rf.isValidElectionNL(term)
 		rf.mu.Unlock()
 
-		if role != Candidate {
+		if !valid {
 			break
 		}
 
 		electionTimeOut := (200 + rand.Intn(200))
 		time.Sleep(time.Duration(electionTimeOut) * time.Millisecond)
 	}
+}
+
+func (rf *Raft) election(term int) {
+	ch := make(chan RequestVoteReply, len(rf.peers)-1)
+
+	for index, _ := range rf.peers {
+		if index == rf.me {
+			continue
+		}
+
+		go func(ch chan RequestVoteReply, term int, index int) {
+			args := RequestVoteArgs{term, rf.me}
+			reply := RequestVoteReply{term, false}
+			rf.sendRequestVote(index, &args, &reply)
+			ch <- reply
+		}(ch, term, index)
+	}
+
+	succeed := 1
+	for reply := range ch {
+		ret := rf.dealWithRequestVoteReply(term, &succeed, &reply)
+		if !ret {
+			break
+		}
+	}
+}
+
+// return value denotes whether election is still valid
+func (rf *Raft) dealWithRequestVoteReply(term int, succeed *int, reply *RequestVoteReply) bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if !rf.isValidElectionNL(term) {
+		return false
+	}
+
+	// I'm still a candidate and the next election has not yet started
+	if reply.VoteGranted {
+		*succeed++
+		if *succeed > len(rf.peers)/2 {
+			rf.role = Leader
+			return false
+		}
+	} else if reply.Term > term {
+		rf.currentTerm = term
+		rf.role = Follower
+
+		return false
+	}
+
+	return true
+}
+
+func (rf *Raft) isValidElectionNL(term int) bool {
+	if rf.currentTerm != term || rf.role != Candidate {
+		return false
+	}
+
+	return true
 }
 
 //
