@@ -237,7 +237,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		rf.lastRecieveHeartBeatTime = time.Now()
 
-
 		// todo append new entries
 
 		// todo update commitIndex
@@ -326,9 +325,7 @@ func (rf *Raft) ticker() {
 		rf.lastElectionTerm = term
 		rf.mu.Unlock()
 
-
-		// TODO should election run in independe
-		rf.election(term)
+		go rf.election(term)
 
 		electionTimeOut := (200 + rand.Intn(200))
 		time.Sleep(time.Duration(electionTimeOut) * time.Millisecond)
@@ -345,7 +342,7 @@ func (rf *Raft) election(term int) {
 
 		go func(ch chan RequestVoteReply, term int, index int) {
 			args := RequestVoteArgs{term, rf.me}
-			reply := RequestVoteReply{term, false}
+			reply := RequestVoteReply{}
 			rf.sendRequestVote(index, &args, &reply)
 			ch <- reply
 		}(ch, term, index)
@@ -354,7 +351,7 @@ func (rf *Raft) election(term int) {
 	succeed := 1
 	for i := 0; i < len(rf.peers)-1; i++ {
 		reply := <-ch
-		ret := rf.dealWithRequestVoteReply(term, &succeed, &reply)
+		ret := rf.dealWithRequestVoteReply(term, &succeed, i+1, &reply)
 		if !ret {
 			break
 		}
@@ -368,7 +365,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 // return value denotes whether election is still valid
-func (rf *Raft) dealWithRequestVoteReply(term int, succeed *int, reply *RequestVoteReply) bool {
+func (rf *Raft) dealWithRequestVoteReply(term int, succeed *int, total int, reply *RequestVoteReply) bool {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -387,6 +384,9 @@ func (rf *Raft) dealWithRequestVoteReply(term int, succeed *int, reply *RequestV
 		rf.currentTerm = term
 		rf.convertToFollowerNL(reply.Term)
 
+		return false
+	} else if total-*succeed > len(rf.peers)/2 {
+		// if more than half fail, stop election
 		return false
 	}
 
@@ -458,7 +458,7 @@ func (rf *Raft) synchronize(term int) {
 
 		go func(ch chan AppendEntriesReply, term int, index int) {
 			args := AppendEntriesArgs{term, rf.me}
-			reply := AppendEntriesReply{term, false}
+			reply := AppendEntriesReply{}
 			rf.sendAppendEntries(index, &args, &reply)
 			ch <- reply
 		}(ch, term, index)
