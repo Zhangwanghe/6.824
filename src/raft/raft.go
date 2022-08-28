@@ -431,6 +431,10 @@ func (rf *Raft) isHeartBeatTimeOutNL() bool {
 
 func (rf *Raft) convertToLeaderNL() {
 	rf.role = Leader
+	for i := 0; i < len(rf.peers); i++ {
+		rf.nextIndex[i] = getLastLogIndex(&rf.log)
+		rf.matchIndex[i] = 0
+	}
 	go rf.heartBeat()
 }
 
