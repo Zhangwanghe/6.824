@@ -91,6 +91,12 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	term = rf.currentTerm
+	isleader = rf.role == Leader
+
 	return term, isleader
 }
 
@@ -184,11 +190,17 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if args.Term < reply.Term {
 		reply.VoteGranted = false
-	} else if rf.votedFor == -1 {
+		return
+	} else if args.Term > reply.Term {
+		rf.convertToFollowerNL(args.Term)
+	}
+
+	if rf.votedFor == -1 {
 		// todo check whether log is up-to-date
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 	}
+
 }
 
 type AppendEntriesArgs struct {
@@ -213,19 +225,23 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 
 	reply.Term = rf.currentTerm
-
 	if args.Term < reply.Term {
 		reply.Success = false
 		return
+	} else if args.Term >= reply.Term {
+		rf.convertToFollowerNL(args.Term)
+		// todo when terms equal
+		// detect log conflicting and not containing
+		// now we just assign true to it
+		reply.Success = true
+
+		rf.lastRecieveHeartBeatTime = time.Now()
+
+
+		// todo append new entries
+
+		// todo update commitIndex
 	}
-
-	// todo log conflicting and not containing
-
-	rf.lastRecieveHeartBeatTime = time.Now()
-
-	// todo append new entries
-
-	// todo update commitIndex
 }
 
 //
@@ -290,28 +306,29 @@ func (rf *Raft) convertToCandidateNL() {
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
-	rf.mu.Lock()
-	rf.currentTerm++
-	term := rf.currentTerm
-	rf.votedFor = rf.me
-	rf.lastElectionTerm = term
-	rf.mu.Unlock()
-
 	for rf.killed() == false {
 
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
-
-		go rf.election(term)
-
 		rf.mu.Lock()
-		valid := rf.isValidElectionNL(term)
+		valid := rf.isValidElectionNL(rf.currentTerm)
 		rf.mu.Unlock()
 
 		if !valid {
 			break
 		}
+
+		rf.mu.Lock()
+		rf.currentTerm++
+		term := rf.currentTerm
+		rf.votedFor = rf.me
+		rf.lastElectionTerm = term
+		rf.mu.Unlock()
+
+
+		// TODO should election run in independe
+		rf.election(term)
 
 		electionTimeOut := (200 + rand.Intn(200))
 		time.Sleep(time.Duration(electionTimeOut) * time.Millisecond)
@@ -319,7 +336,7 @@ func (rf *Raft) ticker() {
 }
 
 func (rf *Raft) election(term int) {
-	ch := make(chan RequestVoteReply, len(rf.peers)-1)
+	ch := make(chan RequestVoteReply)
 
 	for index, _ := range rf.peers {
 		if index == rf.me {
@@ -335,12 +352,14 @@ func (rf *Raft) election(term int) {
 	}
 
 	succeed := 1
-	for reply := range ch {
+	for i := 0; i < len(rf.peers)-1; i++ {
+		reply := <-ch
 		ret := rf.dealWithRequestVoteReply(term, &succeed, &reply)
 		if !ret {
 			break
 		}
 	}
+
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
@@ -366,7 +385,7 @@ func (rf *Raft) dealWithRequestVoteReply(term int, succeed *int, reply *RequestV
 		}
 	} else if reply.Term > rf.currentTerm {
 		rf.currentTerm = term
-		rf.convertToFollowerNL()
+		rf.convertToFollowerNL(reply.Term)
 
 		return false
 	}
@@ -427,7 +446,9 @@ func (rf *Raft) shouldHeartBeatNL() bool {
 }
 
 func (rf *Raft) synchronize(term int) {
+	rf.mu.Lock()
 	rf.lastSendHeartBeatTime = time.Now()
+	rf.mu.Unlock()
 
 	ch := make(chan AppendEntriesReply, len(rf.peers)-1)
 	for index, _ := range rf.peers {
@@ -466,7 +487,7 @@ func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply) 
 
 	if reply.Term > rf.currentTerm {
 		rf.currentTerm = term
-		rf.convertToFollowerNL()
+		rf.convertToFollowerNL(reply.Term)
 
 		return false
 	}
@@ -482,9 +503,10 @@ func (rf *Raft) isValidAppendNL(term int) bool {
 	return true
 }
 
-func (rf *Raft) convertToFollowerNL() {
+func (rf *Raft) convertToFollowerNL(term int) {
 	rf.role = Follower
 	rf.votedFor = -1
+	rf.currentTerm = term
 }
 
 //
