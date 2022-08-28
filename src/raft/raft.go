@@ -66,14 +66,26 @@ const HeartBeatDuration = time.Duration(150) * time.Millisecond
 const CheckHeartBeatDuration = time.Duration(10) * time.Millisecond
 
 type Raft struct {
-	mu                       sync.Mutex          // Lock to protect shared access to this peer's state
-	peers                    []*labrpc.ClientEnd // RPC end points of all peers
-	persister                *Persister          // Object to hold this peer's persisted state
-	me                       int                 // this peer's index into peers[]
-	dead                     int32               // set by Kill()
-	currentTerm              int
+	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	peers     []*labrpc.ClientEnd // RPC end points of all peers
+	persister *Persister          // Object to hold this peer's persisted state
+	me        int                 // this peer's index into peers[]
+	dead      int32               // set by Kill()
+
+	// non-volatile state on all
+	currentTerm int
+	votedFor    int
+	log         Log
+
+	// volatile state on all
+	commitIndex int
+	lastApplied int
+
+	// volatile on Leader
+	nextIndex  []int
+	matchIndex []int
+
 	role                     Role
-	votedFor                 int
 	lastElectionTerm         int
 	lastRecieveHeartBeatTime time.Time
 	lastSendHeartBeatTime    time.Time
@@ -450,7 +462,7 @@ func (rf *Raft) synchronize(term int) {
 	rf.lastSendHeartBeatTime = time.Now()
 	rf.mu.Unlock()
 
-	ch := make(chan AppendEntriesReply, len(rf.peers)-1)
+	ch := make(chan AppendEntriesReply)
 	for index, _ := range rf.peers {
 		if index == rf.me {
 			continue
@@ -464,7 +476,8 @@ func (rf *Raft) synchronize(term int) {
 		}(ch, term, index)
 	}
 
-	for reply := range ch {
+	for i := 0; i < len(rf.peers)-1; i++ {
+		reply := <-ch
 		ret := rf.dealWithAppendEntriesReply(term, &reply)
 		if !ret {
 			break
@@ -529,6 +542,11 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.me = me
 	rf.currentTerm = 0
 	rf.votedFor = -1
+	rf.log = makeEmptyLog()
+	rf.lastApplied = 0
+	rf.commitIndex = 0
+	rf.nextIndex = make([]int, len(peers))
+	rf.matchIndex = make([]int, len(peers))
 	rf.lastElectionTerm = -1
 	rf.lastRecieveHeartBeatTime = time.Now()
 	rf.lastSendHeartBeatTime = time.Now()
