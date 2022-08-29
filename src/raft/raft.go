@@ -620,7 +620,8 @@ func (rf *Raft) leaderCommitNL(followerIndex int) {
 		return
 	}
 
-	sortedIndex := rf.matchIndex
+	sortedIndex := make([]int, len(rf.peers))
+	copy(sortedIndex, rf.matchIndex)
 	sort.Ints(sortedIndex)
 
 	if sortedIndex[len(sortedIndex)/2] > rf.commitIndex {
@@ -630,12 +631,9 @@ func (rf *Raft) leaderCommitNL(followerIndex int) {
 
 func (rf *Raft) commitNL(newCommitIndex int) {
 	msgs := getCommitLogNL(&rf.log, rf.commitIndex, newCommitIndex)
-	go func() {
-		// todo should commit become sychronized?
-		for _, msg := range msgs {
-			rf.commitChan <- msg
-		}
-	}()
+	for _, msg := range msgs {
+		rf.commitChan <- msg
+	}
 	rf.commitIndex = newCommitIndex
 }
 
