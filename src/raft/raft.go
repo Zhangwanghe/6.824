@@ -19,6 +19,7 @@ package raft
 
 import (
 	//	"bytes"
+
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -241,21 +242,26 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 
 	reply.Term = rf.currentTerm
-	if args.Term < reply.Term {
+	if args.Term < reply.Term || !hasPrevLogNL(&rf.log, args.PrevLogIndex, args.PrevLogTerm) {
 		reply.Success = false
 		return
-	} else if args.Term >= reply.Term {
+	} else {
 		rf.convertToFollowerNL(args.Term)
-		// todo when terms equal
-		// detect log conflicting and not containing
-		// now we just assign true to it
+		appendAndRemoveConflictinLogFromIndexNL(&rf.log, args.PrevLogIndex, args.Entries)
 		reply.Success = true
-
 		rf.lastRecieveHeartBeatTime = time.Now()
-
-		// todo append new entries
-
+		if args.LeaderCommit > rf.commitIndex {
+			rf.commitIndex = Min(args.LeaderCommit, getLastLogTermNL(&rf.log))
+		}
 		// todo update commitIndex
+	}
+}
+
+func Min(x int, y int) int {
+	if x > y {
+		return y
+	} else {
+		return x
 	}
 }
 
