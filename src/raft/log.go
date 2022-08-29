@@ -49,23 +49,28 @@ func hasPrevLogNL(log *Log, index int, term int) bool {
 	return len(log.logs) > index && log.logs[index].Term == term
 }
 
+func getLogInfoBeforeConflicting(log *Log) (int, int) {
+	conflictingTerm := log.logs[len(log.logs)-1].Term
+	conflictingIndex := len(log.logs) - 1
+
+	for i := len(log.logs) - 2; i >= 1; i-- {
+		if conflictingTerm == log.logs[i].Term {
+			conflictingIndex = i
+		} else {
+			break
+		}
+	}
+
+	return conflictingTerm, conflictingIndex
+}
+
 func appendAndRemoveConflictinLogFromIndexNL(log *Log, lastLogIndex int, entries []Entry) {
 	if len(entries) == 0 {
 		// heartbeat
 		return
 	}
 
-	for i := lastLogIndex + 1; i < len(log.logs); i++ {
-		if i-lastLogIndex-1 < 0 {
-			log.logs = append(log.logs[:i-1], entries...)
-			return
-		} else if log.logs[i].Term != entries[i-lastLogIndex-1].Term {
-			log.logs = append(log.logs[:i-1], entries[i-lastLogIndex-1:]...)
-			return
-		}
-	}
-
-	log.logs = append(log.logs, entries...)
+	log.logs = append(log.logs[:lastLogIndex+1], entries...)
 }
 
 func getCommitLogNL(log *Log, prevCommit int, newCommit int) []ApplyMsg {
@@ -76,4 +81,24 @@ func getCommitLogNL(log *Log, prevCommit int, newCommit int) []ApplyMsg {
 		ret[i-prevCommit-1].CommandValid = true
 	}
 	return ret
+}
+
+func getLastLogIndexForTerm(log *Log, term int) int {
+	var left = 0
+	var right = len(log.logs) - 1
+
+	for left+1 < right {
+		var mid = (left + right) / 2
+		if log.logs[mid].Term > term {
+			right = mid
+		} else {
+			left = mid
+		}
+	}
+
+	if log.logs[left].Term == term {
+		return left
+	} else {
+		return -1
+	}
 }
