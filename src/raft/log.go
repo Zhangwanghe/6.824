@@ -46,3 +46,12 @@ func appendAndRemoveConflictinLogFromIndexNL(log *Log, index int, entries []Entr
 		}
 	}
 }
+
+func getCommitLogNL(log *Log, prevCommit int, newCommit int) []ApplyMsg {
+	ret := make([]ApplyMsg, newCommit-prevCommit)
+	for i := prevCommit + 1; i <= newCommit; i++ {
+		ret[i].Command = log.logs[i].command
+		ret[i].CommandIndex = i
+		ret[i].CommandValid = true
+	}
+}

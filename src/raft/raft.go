@@ -21,6 +21,7 @@ import (
 	//	"bytes"
 
 	"math/rand"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -90,6 +91,7 @@ type Raft struct {
 	lastElectionTerm         int
 	lastRecieveHeartBeatTime time.Time
 	lastSendHeartBeatTime    time.Time
+	commitChan               chan ApplyMsg
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -234,6 +236,10 @@ type AppendEntriesReply struct {
 	// Your data here (2A).
 	Term    int
 	Success bool
+
+	// add for synchonization
+	LastLogIndex  int
+	FollowerIndex int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -253,6 +259,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if args.LeaderCommit > rf.commitIndex {
 			rf.commitIndex = Min(args.LeaderCommit, getLastLogTermNL(&rf.log))
 		}
+		reply.FollowerIndex = rf.me
+		reply.LastLogIndex = args.PrevLogIndex + len(args.Entries)
 	}
 }
 
@@ -531,6 +539,18 @@ func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply) 
 		return false
 	}
 
+	// update index
+	if reply.Success {
+		rf.matchIndex[reply.FollowerIndex] = reply.LastLogIndex
+		rf.nextIndex[reply.FollowerIndex] = reply.LastLogIndex + 1
+		rf.commitNL(reply.FollowerIndex)
+	} else {
+		// todo should we retry immediately
+		// since term inconsistency has been disposed above
+		// we can assume if we are here, there is log inconsistency
+		rf.nextIndex[reply.FollowerIndex]--
+	}
+
 	return true
 }
 
@@ -540,6 +560,25 @@ func (rf *Raft) isValidAppendNL(term int) bool {
 	}
 
 	return true
+}
+
+func (rf *Raft) commitNL(followerIndex int) {
+	if rf.matchIndex[followerIndex] <= rf.commitIndex {
+		return
+	}
+
+	sortedIndex := rf.matchIndex
+	sort.Ints(sortedIndex)
+
+	if sortedIndex[len(sortedIndex)/2] > rf.commitIndex {
+		msgs := getCommitLogNL(&rf.log, rf.commitIndex, sortedIndex[len(sortedIndex)/2])
+		go func() {
+			for _, msg := range msgs {
+				rf.commitChan <- msg
+			}
+		}()
+		rf.commitIndex = sortedIndex[len(sortedIndex)/2]
+	}
 }
 
 func (rf *Raft) convertToFollowerNL(term int) {
@@ -576,6 +615,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastElectionTerm = -1
 	rf.lastRecieveHeartBeatTime = time.Now()
 	rf.lastSendHeartBeatTime = time.Now()
+	rf.commitChan = applyCh
 
 	// Your initialization code here (2A, 2B, 2C).
 
