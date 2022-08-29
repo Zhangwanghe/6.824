@@ -217,8 +217,12 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 type AppendEntriesArgs struct {
 	// Your data here (2A, 2B).
-	Term     int
-	LeaderId int
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []Entry
+	LeaderCommit int
 }
 
 //
@@ -473,7 +477,7 @@ func (rf *Raft) synchronize(term int) {
 		}
 
 		go func(ch chan AppendEntriesReply, term int, index int) {
-			args := AppendEntriesArgs{term, rf.me}
+			args := rf.makeAppendEntriesArgs(term, index)
 			reply := AppendEntriesReply{}
 			rf.sendAppendEntries(index, &args, &reply)
 			ch <- reply
@@ -487,6 +491,19 @@ func (rf *Raft) synchronize(term int) {
 			break
 		}
 	}
+}
+
+func (rf *Raft) makeAppendEntriesArgs(term int, index int) AppendEntriesArgs {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	ret := AppendEntriesArgs{}
+	ret.Term = term
+	ret.LeaderId = rf.me
+	ret.PrevLogIndex, ret.PrevLogTerm, ret.Entries = getPrevLog(&rf.log, index)
+	ret.LeaderCommit = rf.commitIndex
+
+	return ret
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
