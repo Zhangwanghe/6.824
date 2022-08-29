@@ -14,6 +14,10 @@ func makeEmptyLog() Log {
 	return Log{make([]Entry, 1), 0}
 }
 
+func appendLogNL(log *Log, term int, command interface{}) {
+	log.logs = append(log.logs, Entry{term, command})
+}
+
 func getLastLogIndexNL(log *Log) int {
 	return len(log.logs) - 1
 }
@@ -54,4 +58,5 @@ func getCommitLogNL(log *Log, prevCommit int, newCommit int) []ApplyMsg {
 		ret[i].CommandIndex = i
 		ret[i].CommandValid = true
 	}
+	return ret
 }

@@ -297,7 +297,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 
 	term = rf.currentTerm
 	isLeader = rf.role == Leader
-	go rf.synchronize(term)
+
+	if isLeader {
+		go rf.synchronize(term)
+		appendLogNL(&rf.log, term, command)
+	}
 
 	return index, term, isLeader
 }
