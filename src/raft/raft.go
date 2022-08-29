@@ -253,7 +253,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		if args.LeaderCommit > rf.commitIndex {
 			rf.commitIndex = Min(args.LeaderCommit, getLastLogTermNL(&rf.log))
 		}
-		// todo update commitIndex
 	}
 }
 
@@ -442,7 +441,7 @@ func (rf *Raft) isHeartBeatTimeOutNL() bool {
 func (rf *Raft) convertToLeaderNL() {
 	rf.role = Leader
 	for i := 0; i < len(rf.peers); i++ {
-		rf.nextIndex[i] = getLastLogIndex(&rf.log)
+		rf.nextIndex[i] = getLastLogIndexNL(&rf.log)
 		rf.matchIndex[i] = 0
 	}
 	go rf.heartBeat()
@@ -506,7 +505,7 @@ func (rf *Raft) makeAppendEntriesArgs(term int, index int) AppendEntriesArgs {
 	ret := AppendEntriesArgs{}
 	ret.Term = term
 	ret.LeaderId = rf.me
-	ret.PrevLogIndex, ret.PrevLogTerm, ret.Entries = getPrevLog(&rf.log, index)
+	ret.PrevLogIndex, ret.PrevLogTerm, ret.Entries = getPrevLogAndNewEntriesNL(&rf.log, rf.nextIndex[index])
 	ret.LeaderCommit = rf.commitIndex
 
 	return ret

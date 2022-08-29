@@ -22,7 +22,7 @@ func getLastLogTermNL(log *Log) int {
 	return log.logs[len(log.logs)-1].term
 }
 
-func getPrevLogNL(log *Log, index int) (int, int, []Entry) {
+func getPrevLogAndNewEntriesNL(log *Log, index int) (int, int, []Entry) {
 	if index == 0 {
 		return index - 1, -1, log.logs[index:]
 	} else {
@@ -31,6 +31,10 @@ func getPrevLogNL(log *Log, index int) (int, int, []Entry) {
 }
 
 func hasPrevLogNL(log *Log, index int, term int) bool {
+	if index < 0 {
+		return true
+	}
+
 	return len(log.logs) > index && log.logs[index].term == term
 }
 
