@@ -263,7 +263,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = true
 		rf.lastRecieveHeartBeatTime = time.Now()
 		if args.LeaderCommit > rf.commitIndex {
-			rf.commitIndex = Min(args.LeaderCommit, getLastLogTermNL(&rf.log))
+			newCommitIndex := Min(args.LeaderCommit, getLastLogIndexNL(&rf.log))
+			rf.commitNL(newCommitIndex)
 		}
 		reply.FollowerIndex = rf.me
 		reply.LastLogIndex = args.PrevLogIndex + len(args.Entries)
@@ -305,8 +306,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader = rf.role == Leader
 
 	if isLeader {
-		go rf.synchronize(term)
 		appendLogNL(&rf.log, term, command)
+		index = getLastLogIndexNL(&rf.log)
+		go rf.synchronize(term)
 	}
 
 	return index, term, isLeader
@@ -461,7 +463,7 @@ func (rf *Raft) isHeartBeatTimeOutNL() bool {
 func (rf *Raft) convertToLeaderNL() {
 	rf.role = Leader
 	for i := 0; i < len(rf.peers); i++ {
-		rf.nextIndex[i] = getLastLogIndexNL(&rf.log)
+		rf.nextIndex[i] = getLastLogIndexNL(&rf.log) + 1
 		rf.matchIndex[i] = 0
 	}
 	go rf.heartBeat()
@@ -555,7 +557,7 @@ func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply) 
 	if reply.Success {
 		rf.matchIndex[reply.FollowerIndex] = reply.LastLogIndex
 		rf.nextIndex[reply.FollowerIndex] = reply.LastLogIndex + 1
-		rf.commitNL(reply.FollowerIndex)
+		rf.leaderCommitNL(reply.FollowerIndex)
 	} else {
 		// todo should we retry immediately
 		// since term inconsistency has been disposed above
@@ -574,7 +576,7 @@ func (rf *Raft) isValidAppendNL(term int) bool {
 	return true
 }
 
-func (rf *Raft) commitNL(followerIndex int) {
+func (rf *Raft) leaderCommitNL(followerIndex int) {
 	if rf.matchIndex[followerIndex] <= rf.commitIndex {
 		return
 	}
@@ -583,14 +585,19 @@ func (rf *Raft) commitNL(followerIndex int) {
 	sort.Ints(sortedIndex)
 
 	if sortedIndex[len(sortedIndex)/2] > rf.commitIndex {
-		msgs := getCommitLogNL(&rf.log, rf.commitIndex, sortedIndex[len(sortedIndex)/2])
-		go func() {
-			for _, msg := range msgs {
-				rf.commitChan <- msg
-			}
-		}()
-		rf.commitIndex = sortedIndex[len(sortedIndex)/2]
+		rf.commitNL(sortedIndex[len(sortedIndex)/2])
 	}
+}
+
+func (rf *Raft) commitNL(newCommitIndex int) {
+	msgs := getCommitLogNL(&rf.log, rf.commitIndex, newCommitIndex)
+	go func() {
+		// todo should commit become sychronized?
+		for _, msg := range msgs {
+			rf.commitChan <- msg
+		}
+	}()
+	rf.commitIndex = newCommitIndex
 }
 
 func (rf *Raft) convertToFollowerNL(term int) {
