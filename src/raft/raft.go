@@ -325,7 +325,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		rf.nextIndex[rf.me] = index + 1
 		rf.matchIndex[rf.me] = index
 		// todo should we synchronize immediately or wait for heartbeat
-		go rf.synchronize(term)
+		// go rf.synchronize(term)
 	}
 
 	return index, term, isLeader

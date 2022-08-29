@@ -34,10 +34,13 @@ func getLastLogTermNL(log *Log) int {
 }
 
 func getPrevLogAndNewEntriesNL(log *Log, index int) (int, int, []Entry) {
+	entries := make([]Entry, len(log.logs)-index)
+	copy(entries, log.logs[index:])
+
 	if index <= 1 {
-		return index - 1, -1, log.logs[index:]
+		return index - 1, -1, entries
 	} else {
-		return index - 1, log.logs[index-1].Term, log.logs[index:]
+		return index - 1, log.logs[index-1].Term, entries
 	}
 }
 
