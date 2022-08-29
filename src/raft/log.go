@@ -1,8 +1,14 @@
 package raft
 
+import "fmt"
+
 type Entry struct {
 	Term    int
 	Command interface{}
+}
+
+func (e *Entry) String() string {
+	return fmt.Sprintf("T %v", e.Term)
 }
 
 type Log struct {
