@@ -254,20 +254,29 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer rf.mu.Unlock()
 
 	reply.Term = rf.currentTerm
-	if args.Term < reply.Term || !hasPrevLogNL(&rf.log, args.PrevLogIndex, args.PrevLogTerm) {
+	reply.FollowerIndex = rf.me
+
+	if args.Term < reply.Term {
 		reply.Success = false
 		return
 	} else {
+		rf.lastRecieveHeartBeatTime = time.Now()
 		rf.convertToFollowerNL(args.Term)
+
+		if !hasPrevLogNL(&rf.log, args.PrevLogIndex, args.PrevLogTerm) {
+			reply.Success = false
+			return
+		}
+
 		appendAndRemoveConflictinLogFromIndexNL(&rf.log, args.PrevLogIndex, args.Entries)
 		reply.Success = true
-		rf.lastRecieveHeartBeatTime = time.Now()
+		reply.LastLogIndex = args.PrevLogIndex + len(args.Entries)
+
 		if args.LeaderCommit > rf.commitIndex {
 			newCommitIndex := Min(args.LeaderCommit, getLastLogIndexNL(&rf.log))
 			rf.commitNL(newCommitIndex)
 		}
-		reply.FollowerIndex = rf.me
-		reply.LastLogIndex = args.PrevLogIndex + len(args.Entries)
+
 	}
 }
 
@@ -308,6 +317,9 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if isLeader {
 		appendLogNL(&rf.log, term, command)
 		index = getLastLogIndexNL(&rf.log)
+		rf.nextIndex[rf.me] = index + 1
+		rf.matchIndex[rf.me] = index
+		// todo should we synchronize immediately or wait for heartbeat
 		go rf.synchronize(term)
 	}
 
@@ -336,8 +348,11 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) convertToCandidateNL() {
+	if rf.role == Candidate {
+		return
+	}
+
 	rf.role = Candidate
-	// todo check this condition
 	if rf.lastElectionTerm != rf.currentTerm {
 		go rf.ticker()
 	}
@@ -461,6 +476,10 @@ func (rf *Raft) isHeartBeatTimeOutNL() bool {
 }
 
 func (rf *Raft) convertToLeaderNL() {
+	if rf.role == Leader {
+		return
+	}
+
 	rf.role = Leader
 	for i := 0; i < len(rf.peers); i++ {
 		rf.nextIndex[i] = getLastLogIndexNL(&rf.log) + 1
@@ -471,20 +490,27 @@ func (rf *Raft) convertToLeaderNL() {
 
 func (rf *Raft) heartBeat() {
 	for {
+		go rf.synchronize(rf.currentTerm)
+
 		rf.mu.Lock()
-
-		if rf.shouldHeartBeatNL() {
-			go rf.synchronize(rf.currentTerm)
-		}
 		isLeader := rf.role == Leader
-
 		rf.mu.Unlock()
 
 		if !isLeader {
 			break
 		}
 
-		time.Sleep(CheckHeartBeatDuration)
+		for {
+			time.Sleep(CheckHeartBeatDuration)
+
+			rf.mu.Lock()
+			shouldHearBeat := rf.shouldHeartBeatNL()
+			rf.mu.Unlock()
+
+			if shouldHearBeat {
+				break
+			}
+		}
 	}
 }
 
@@ -503,10 +529,22 @@ func (rf *Raft) synchronize(term int) {
 			continue
 		}
 
+		rf.mu.Lock()
+		isLeader := rf.role == Leader
+		rf.mu.Unlock()
+
+		if !isLeader {
+			break
+		}
+
 		go func(ch chan AppendEntriesReply, term int, index int) {
 			args := rf.makeAppendEntriesArgs(term, index)
 			reply := AppendEntriesReply{}
-			rf.sendAppendEntries(index, &args, &reply)
+			ok := rf.sendAppendEntries(index, &args, &reply)
+			// set followerIndex to -1
+			if !ok {
+				reply.FollowerIndex = -1
+			}
 			ch <- reply
 		}(ch, term, index)
 	}
@@ -558,8 +596,9 @@ func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply) 
 		rf.matchIndex[reply.FollowerIndex] = reply.LastLogIndex
 		rf.nextIndex[reply.FollowerIndex] = reply.LastLogIndex + 1
 		rf.leaderCommitNL(reply.FollowerIndex)
-	} else {
+	} else if reply.FollowerIndex != -1 {
 		// todo should we retry immediately
+
 		// since term inconsistency has been disposed above
 		// we can assume if we are here, there is log inconsistency
 		rf.nextIndex[reply.FollowerIndex]--
@@ -601,6 +640,10 @@ func (rf *Raft) commitNL(newCommitIndex int) {
 }
 
 func (rf *Raft) convertToFollowerNL(term int) {
+	if rf.role == Follower {
+		return
+	}
+
 	rf.role = Follower
 	rf.votedFor = -1
 	rf.currentTerm = term
