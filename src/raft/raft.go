@@ -212,8 +212,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.convertToFollowerNL(args.Term)
 	}
 
+	// todo whether to add an empty log after becoming leader
 	if rf.votedFor == -1 && !rf.isLogUpToDateNL(args.lastLogIndex, args.lastLogTerm) {
-		// todo check whether log is up-to-date
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 	}
@@ -360,18 +360,20 @@ func (rf *Raft) ticker() {
 		rf.mu.Lock()
 		rf.currentTerm++
 		term := rf.currentTerm
+		lastLogTerm := getLastLogTermNL(&rf.log)
+		lastLogIndex := getLastLogIndexNL(&rf.log)
 		rf.votedFor = rf.me
 		rf.lastElectionTerm = term
 		rf.mu.Unlock()
 
-		go rf.election(term)
+		go rf.election(term, lastLogTerm, lastLogIndex)
 
 		electionTimeOut := (200 + rand.Intn(200))
 		time.Sleep(time.Duration(electionTimeOut) * time.Millisecond)
 	}
 }
 
-func (rf *Raft) election(term int) {
+func (rf *Raft) election(term int, lastLogTerm int, lastLogIndex int) {
 	ch := make(chan RequestVoteReply)
 
 	for index, _ := range rf.peers {
@@ -379,12 +381,12 @@ func (rf *Raft) election(term int) {
 			continue
 		}
 
-		go func(ch chan RequestVoteReply, term int, index int) {
-			args := RequestVoteArgs{term, rf.me}
+		go func(index int) {
+			args := RequestVoteArgs{term, rf.me, lastLogTerm, lastLogIndex}
 			reply := RequestVoteReply{}
 			rf.sendRequestVote(index, &args, &reply)
 			ch <- reply
-		}(ch, term, index)
+		}(index)
 	}
 
 	succeed := 1
