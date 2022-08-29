@@ -1,8 +1,8 @@
 package raft
 
 type Entry struct {
-	term    int
-	command interface{}
+	Term    int
+	Command interface{}
 }
 
 type Log struct {
@@ -23,14 +23,14 @@ func getLastLogIndexNL(log *Log) int {
 }
 
 func getLastLogTermNL(log *Log) int {
-	return log.logs[len(log.logs)-1].term
+	return log.logs[len(log.logs)-1].Term
 }
 
 func getPrevLogAndNewEntriesNL(log *Log, index int) (int, int, []Entry) {
 	if index == 0 {
 		return index - 1, -1, log.logs[index:]
 	} else {
-		return index - 1, log.logs[index-1].term, log.logs[index:]
+		return index - 1, log.logs[index-1].Term, log.logs[index:]
 	}
 }
 
@@ -39,12 +39,12 @@ func hasPrevLogNL(log *Log, index int, term int) bool {
 		return true
 	}
 
-	return len(log.logs) > index && log.logs[index].term == term
+	return len(log.logs) > index && log.logs[index].Term == term
 }
 
 func appendAndRemoveConflictinLogFromIndexNL(log *Log, index int, entries []Entry) {
 	for i := index + 1; i < len(log.logs); i++ {
-		if log.logs[i].term != entries[i-index-1].term {
+		if log.logs[i].Term != entries[i-index-1].Term {
 			log.logs = append(log.logs[:i-1], entries[i-index-1:]...)
 			break
 		}
@@ -54,7 +54,7 @@ func appendAndRemoveConflictinLogFromIndexNL(log *Log, index int, entries []Entr
 func getCommitLogNL(log *Log, prevCommit int, newCommit int) []ApplyMsg {
 	ret := make([]ApplyMsg, newCommit-prevCommit)
 	for i := prevCommit + 1; i <= newCommit; i++ {
-		ret[i].Command = log.logs[i].command
+		ret[i].Command = log.logs[i].Command
 		ret[i].CommandIndex = i
 		ret[i].CommandValid = true
 	}

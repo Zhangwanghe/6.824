@@ -181,8 +181,8 @@ type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term         int
 	CandidateId  int
-	lastLogTerm  int
-	lastLogIndex int
+	LastLogTerm  int
+	LastLogIndex int
 }
 
 //
@@ -213,7 +213,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// todo whether to add an empty log after becoming leader
-	if rf.votedFor == -1 && !rf.isLogUpToDateNL(args.lastLogIndex, args.lastLogTerm) {
+	if rf.votedFor == -1 && !rf.isLogUpToDateNL(args.LastLogIndex, args.LastLogTerm) {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 	}
