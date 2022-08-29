@@ -17,6 +17,7 @@ type Log struct {
 }
 
 func makeEmptyLog() Log {
+	// log start from 1
 	return Log{make([]Entry, 1), 0}
 }
 
@@ -33,7 +34,7 @@ func getLastLogTermNL(log *Log) int {
 }
 
 func getPrevLogAndNewEntriesNL(log *Log, index int) (int, int, []Entry) {
-	if index == 0 {
+	if index <= 1 {
 		return index - 1, -1, log.logs[index:]
 	} else {
 		return index - 1, log.logs[index-1].Term, log.logs[index:]
@@ -41,28 +42,38 @@ func getPrevLogAndNewEntriesNL(log *Log, index int) (int, int, []Entry) {
 }
 
 func hasPrevLogNL(log *Log, index int, term int) bool {
-	if index < 0 {
+	if index <= 0 {
 		return true
 	}
 
 	return len(log.logs) > index && log.logs[index].Term == term
 }
 
-func appendAndRemoveConflictinLogFromIndexNL(log *Log, index int, entries []Entry) {
-	for i := index + 1; i < len(log.logs); i++ {
-		if log.logs[i].Term != entries[i-index-1].Term {
-			log.logs = append(log.logs[:i-1], entries[i-index-1:]...)
-			break
+func appendAndRemoveConflictinLogFromIndexNL(log *Log, lastLogIndex int, entries []Entry) {
+	if len(entries) == 0 {
+		// heartbeat
+		return
+	}
+
+	for i := lastLogIndex + 1; i < len(log.logs); i++ {
+		if i-lastLogIndex-1 < 0 {
+			log.logs = append(log.logs[:i-1], entries...)
+			return
+		} else if log.logs[i].Term != entries[i-lastLogIndex-1].Term {
+			log.logs = append(log.logs[:i-1], entries[i-lastLogIndex-1:]...)
+			return
 		}
 	}
+
+	log.logs = append(log.logs, entries...)
 }
 
 func getCommitLogNL(log *Log, prevCommit int, newCommit int) []ApplyMsg {
 	ret := make([]ApplyMsg, newCommit-prevCommit)
 	for i := prevCommit + 1; i <= newCommit; i++ {
-		ret[i].Command = log.logs[i].Command
-		ret[i].CommandIndex = i
-		ret[i].CommandValid = true
+		ret[i-prevCommit-1].Command = log.logs[i].Command
+		ret[i-prevCommit-1].CommandIndex = i
+		ret[i-prevCommit-1].CommandValid = true
 	}
 	return ret
 }
