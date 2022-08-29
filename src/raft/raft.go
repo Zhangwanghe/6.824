@@ -246,6 +246,10 @@ type AppendEntriesReply struct {
 	// add for synchonization
 	LastLogIndex  int
 	FollowerIndex int
+
+	// add for quick recover log
+	ConflictTerm                 int
+	FirstLogIndexForConflictTerm int
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
@@ -265,6 +269,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		if !hasPrevLogNL(&rf.log, args.PrevLogIndex, args.PrevLogTerm) {
 			reply.Success = false
+			reply.ConflictTerm, reply.FirstLogIndexForConflictTerm = getLogInfoBeforeConflicting(&rf.log)
 			return
 		}
 
@@ -490,11 +495,12 @@ func (rf *Raft) convertToLeaderNL() {
 
 func (rf *Raft) heartBeat() {
 	for {
-		go rf.synchronize(rf.currentTerm)
-
 		rf.mu.Lock()
 		isLeader := rf.role == Leader
+		term := rf.currentTerm
 		rf.mu.Unlock()
+
+		go rf.synchronize(term)
 
 		if !isLeader {
 			break
@@ -597,11 +603,15 @@ func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply) 
 		rf.nextIndex[reply.FollowerIndex] = reply.LastLogIndex + 1
 		rf.leaderCommitNL(reply.FollowerIndex)
 	} else if reply.FollowerIndex != -1 {
-		// todo should we retry immediately
-
 		// since term inconsistency has been disposed above
 		// we can assume if we are here, there is log inconsistency
-		rf.nextIndex[reply.FollowerIndex]--
+		// todo optimized by using a map to save term-last log index relation
+		logIndex := getLastLogIndexForTerm(&rf.log, term)
+		if logIndex != -1 {
+			rf.nextIndex[reply.FollowerIndex] = logIndex + 1
+		} else {
+			rf.nextIndex[reply.FollowerIndex] = reply.FirstLogIndexForConflictTerm
+		}
 	}
 
 	return true
