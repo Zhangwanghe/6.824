@@ -179,8 +179,10 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
-	Term        int
-	CandidateId int
+	Term         int
+	CandidateId  int
+	lastLogTerm  int
+	lastLogIndex int
 }
 
 //
@@ -210,12 +212,16 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.convertToFollowerNL(args.Term)
 	}
 
-	if rf.votedFor == -1 {
+	if rf.votedFor == -1 && !rf.isLogUpToDateNL(args.lastLogIndex, args.lastLogTerm) {
 		// todo check whether log is up-to-date
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 	}
+}
 
+func (rf *Raft) isLogUpToDateNL(logIndex int, logTerm int) bool {
+	lastLogForMe := getLastLogTermNL(&rf.log)
+	return lastLogForMe > logTerm || (lastLogForMe == logTerm && getLastLogIndexNL(&rf.log) > logIndex)
 }
 
 type AppendEntriesArgs struct {
