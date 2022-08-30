@@ -213,11 +213,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.convertToFollowerNL(args.Term)
 	}
 
-	// todo whether to add an empty log after becoming leader
 	if rf.votedFor == -1 && !rf.isLogUpToDateNL(args.LastLogIndex, args.LastLogTerm) {
 		reply.VoteGranted = true
 		rf.votedFor = args.CandidateId
 	}
+
 }
 
 func (rf *Raft) isLogUpToDateNL(logIndex int, logTerm int) bool {
@@ -320,13 +320,20 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term = rf.currentTerm
 	isLeader = rf.role == Leader
 
+	// todo
+	// consider following sequence with S0 S1 S2:
+	// 1. SO becomes leader
+	// 2. S0 disconnects
+	// 3. S1 becomes leader
+	// 4. S0 reconnects before it discovers network failure
+	// 5. both S0 and S1 consider they are leaders.
+	// 6. A Start invocation may be assigned to a wrong server, which is S0 in this case
+	// should we resonse after we apply all states
 	if isLeader {
 		appendLogNL(&rf.log, term, command)
 		index = getLastLogIndexNL(&rf.log)
 		rf.nextIndex[rf.me] = index + 1
 		rf.matchIndex[rf.me] = index
-		// todo should we synchronize immediately or wait for heartbeat
-		// go rf.synchronize(term)
 	}
 
 	return index, term, isLeader
@@ -607,7 +614,6 @@ func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply, 
 	}
 
 	if reply.Term > rf.currentTerm {
-		rf.currentTerm = term
 		rf.convertToFollowerNL(reply.Term)
 
 		return false
@@ -667,13 +673,14 @@ func (rf *Raft) commitNL(newCommitIndex int) {
 }
 
 func (rf *Raft) convertToFollowerNL(term int) {
+	rf.currentTerm = term
+
 	if rf.role == Follower {
 		return
 	}
 
 	rf.role = Follower
 	rf.votedFor = -1
-	rf.currentTerm = term
 }
 
 //
