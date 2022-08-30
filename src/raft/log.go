@@ -99,9 +99,5 @@ func getLastLogIndexForTerm(log *Log, term int) int {
 		}
 	}
 
-	if log.logs[left].Term == term {
-		return left
-	} else {
-		return -1
-	}
+	return left
 }

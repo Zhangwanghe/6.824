@@ -91,6 +91,7 @@ type Raft struct {
 	lastElectionTerm         int
 	lastRecieveHeartBeatTime time.Time
 	lastSendHeartBeatTime    time.Time
+	lastElectionTime         time.Time
 	commitChan               chan ApplyMsg
 
 	// Your data here (2A, 2B, 2C).
@@ -367,10 +368,22 @@ func (rf *Raft) convertToCandidateNL() {
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
+		electionTimeOut := (200 + rand.Intn(200))
+		for rf.killed() == false {
+			rf.mu.Lock()
+			timeOut := rf.isElecitonTimeOutNL(time.Duration(electionTimeOut) * time.Millisecond)
+			rf.mu.Unlock()
+
+			if timeOut {
+				break
+			}
+
+			time.Sleep(CheckHeartBeatDuration)
+		}
+
 		rf.mu.Lock()
 		valid := rf.isValidElectionNL(rf.currentTerm)
 		rf.mu.Unlock()
@@ -386,12 +399,10 @@ func (rf *Raft) ticker() {
 		lastLogIndex := getLastLogIndexNL(&rf.log)
 		rf.votedFor = rf.me
 		rf.lastElectionTerm = term
+		rf.lastElectionTime = time.Now()
 		rf.mu.Unlock()
 
 		go rf.election(term, lastLogTerm, lastLogIndex)
-
-		electionTimeOut := (200 + rand.Intn(200))
-		time.Sleep(time.Duration(electionTimeOut) * time.Millisecond)
 	}
 }
 
@@ -457,11 +468,15 @@ func (rf *Raft) dealWithRequestVoteReply(term int, succeed *int, total int, repl
 }
 
 func (rf *Raft) isValidElectionNL(term int) bool {
-	if rf.currentTerm != term || rf.role != Candidate {
+	if rf.currentTerm != term || rf.role != Candidate || rf.killed() {
 		return false
 	}
 
 	return true
+}
+
+func (rf *Raft) isElecitonTimeOutNL(duration time.Duration) bool {
+	return rf.lastElectionTime.Add(duration).Before(time.Now())
 }
 
 func (rf *Raft) heartBeatCheck() {
@@ -494,7 +509,7 @@ func (rf *Raft) convertToLeaderNL() {
 }
 
 func (rf *Raft) heartBeat() {
-	for {
+	for rf.killed() == false {
 		rf.mu.Lock()
 		isLeader := rf.role == Leader
 		term := rf.currentTerm
@@ -506,7 +521,7 @@ func (rf *Raft) heartBeat() {
 			break
 		}
 
-		for {
+		for rf.killed() == false {
 			time.Sleep(CheckHeartBeatDuration)
 
 			rf.mu.Lock()
@@ -555,9 +570,10 @@ func (rf *Raft) synchronize(term int) {
 		}(ch, term, index)
 	}
 
+	failed := 0
 	for i := 0; i < len(rf.peers)-1; i++ {
 		reply := <-ch
-		ret := rf.dealWithAppendEntriesReply(term, &reply)
+		ret := rf.dealWithAppendEntriesReply(term, &reply, &failed)
 		if !ret {
 			break
 		}
@@ -582,7 +598,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply) bool {
+func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply, failed *int) bool {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -606,11 +622,14 @@ func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply) 
 		// since term inconsistency has been disposed above
 		// we can assume if we are here, there is log inconsistency
 		// todo optimized by using a map to save term-last log index relation
-		logIndex := getLastLogIndexForTerm(&rf.log, term)
-		if logIndex != -1 {
-			rf.nextIndex[reply.FollowerIndex] = logIndex + 1
-		} else {
-			rf.nextIndex[reply.FollowerIndex] = reply.FirstLogIndexForConflictTerm
+		logIndex := getLastLogIndexForTerm(&rf.log, reply.ConflictTerm)
+		rf.nextIndex[reply.FollowerIndex] = Min(logIndex, reply.FirstLogIndexForConflictTerm) + 1
+
+	} else {
+		*failed++
+		if *failed > len(rf.peers)/2 {
+			rf.convertToCandidateNL()
+			return false
 		}
 	}
 
@@ -618,7 +637,7 @@ func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply) 
 }
 
 func (rf *Raft) isValidAppendNL(term int) bool {
-	if rf.currentTerm != term || rf.role != Leader {
+	if rf.currentTerm != term || rf.role != Leader || rf.killed() {
 		return false
 	}
 
@@ -685,6 +704,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.lastElectionTerm = -1
 	rf.lastRecieveHeartBeatTime = time.Now()
 	rf.lastSendHeartBeatTime = time.Now()
+	s, _ := time.ParseDuration("-1s")
+	rf.lastElectionTime = time.Now().Add(s)
 	rf.commitChan = applyCh
 
 	// Your initialization code here (2A, 2B, 2C).
