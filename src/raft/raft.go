@@ -512,8 +512,17 @@ func (rf *Raft) convertToLeaderNL() {
 		rf.matchIndex[i] = 0
 	}
 
-	// commit all uncommited logs
-	rf.commitNL(getLastLogIndexNL(&rf.log))
+	// set matchindex for me to lastlogindex for following situation
+	// 1. S1 S2 S3
+	// 2. S1 -> leader
+	// 3. S2 disconnect
+	// 4. S1 receive a command
+	// 5. S1 sends this command to S3
+	// 6. S1 commits
+	// 7. S1 network conjests
+	// 8. S3 is elected as leader
+	// 9. S3 should commit its own newlog
+	rf.matchIndex[rf.me] = getLastLogIndexNL(&rf.log)
 
 	go rf.heartBeat()
 
