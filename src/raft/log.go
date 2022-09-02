@@ -12,8 +12,8 @@ func (e *Entry) String() string {
 }
 
 type Log struct {
-	logs       []Entry
-	startIndex int
+	Logs       []Entry
+	StartIndex int
 }
 
 func makeEmptyLog() Log {
@@ -22,25 +22,25 @@ func makeEmptyLog() Log {
 }
 
 func appendLogNL(log *Log, term int, command interface{}) {
-	log.logs = append(log.logs, Entry{term, command})
+	log.Logs = append(log.Logs, Entry{term, command})
 }
 
 func getLastLogIndexNL(log *Log) int {
-	return len(log.logs) - 1
+	return len(log.Logs) - 1
 }
 
 func getLastLogTermNL(log *Log) int {
-	return log.logs[len(log.logs)-1].Term
+	return log.Logs[len(log.Logs)-1].Term
 }
 
 func getPrevLogAndNewEntriesNL(log *Log, index int) (int, int, []Entry) {
-	entries := make([]Entry, len(log.logs)-index)
-	copy(entries, log.logs[index:])
+	entries := make([]Entry, len(log.Logs)-index)
+	copy(entries, log.Logs[index:])
 
 	if index <= 1 {
 		return index - 1, -1, entries
 	} else {
-		return index - 1, log.logs[index-1].Term, entries
+		return index - 1, log.Logs[index-1].Term, entries
 	}
 }
 
@@ -49,15 +49,15 @@ func hasPrevLogNL(log *Log, index int, term int) bool {
 		return true
 	}
 
-	return len(log.logs) > index && log.logs[index].Term == term
+	return len(log.Logs) > index && log.Logs[index].Term == term
 }
 
 func getLogInfoBeforeConflicting(log *Log) (int, int) {
-	conflictingTerm := log.logs[len(log.logs)-1].Term
-	conflictingIndex := len(log.logs) - 1
+	conflictingTerm := log.Logs[len(log.Logs)-1].Term
+	conflictingIndex := len(log.Logs) - 1
 
-	for i := len(log.logs) - 2; i >= 1; i-- {
-		if conflictingTerm == log.logs[i].Term {
+	for i := len(log.Logs) - 2; i >= 1; i-- {
+		if conflictingTerm == log.Logs[i].Term {
 			conflictingIndex = i
 		} else {
 			break
@@ -73,13 +73,13 @@ func appendAndRemoveConflictinLogFromIndexNL(log *Log, lastLogIndex int, entries
 		return
 	}
 
-	log.logs = append(log.logs[:lastLogIndex+1], entries...)
+	log.Logs = append(log.Logs[:lastLogIndex+1], entries...)
 }
 
 func getCommitLogNL(log *Log, prevCommit int, newCommit int) []ApplyMsg {
 	ret := make([]ApplyMsg, newCommit-prevCommit)
 	for i := prevCommit + 1; i <= newCommit; i++ {
-		ret[i-prevCommit-1].Command = log.logs[i].Command
+		ret[i-prevCommit-1].Command = log.Logs[i].Command
 		ret[i-prevCommit-1].CommandIndex = i
 		ret[i-prevCommit-1].CommandValid = true
 	}
@@ -88,11 +88,11 @@ func getCommitLogNL(log *Log, prevCommit int, newCommit int) []ApplyMsg {
 
 func getLastLogIndexForTerm(log *Log, term int) int {
 	var left = 0
-	var right = len(log.logs) - 1
+	var right = len(log.Logs) - 1
 
 	for left+1 < right {
 		var mid = (left + right) / 2
-		if log.logs[mid].Term > term {
+		if log.Logs[mid].Term > term {
 			right = mid
 		} else {
 			left = mid
