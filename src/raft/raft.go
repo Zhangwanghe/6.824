@@ -122,7 +122,7 @@ func (rf *Raft) GetState() (int, bool) {
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
 //
-func (rf *Raft) persist() {
+func (rf *Raft) persistNL() {
 	// Your code here (2C).
 	// Example:
 	w := new(bytes.Buffer)
@@ -222,7 +222,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	if rf.votedFor == -1 && !rf.isLogUpToDateNL(args.LastLogIndex, args.LastLogTerm) {
 		reply.VoteGranted = true
-		rf.votedFor = args.CandidateId
+		rf.voteNL(args.CandidateId)
 	}
 
 }
@@ -282,6 +282,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 
 		appendAndRemoveConflictinLogFromIndexNL(&rf.log, args.PrevLogIndex, args.Entries)
+		rf.persistNL()
+
 		reply.Success = true
 		reply.LastLogIndex = args.PrevLogIndex + len(args.Entries)
 
@@ -338,6 +340,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// should we resonse after we apply all states
 	if isLeader {
 		appendLogNL(&rf.log, term, command)
+		rf.persistNL()
+
 		index = getLastLogIndexNL(&rf.log)
 		rf.nextIndex[rf.me] = index + 1
 		rf.matchIndex[rf.me] = index
@@ -411,7 +415,7 @@ func (rf *Raft) ticker() {
 		term := rf.currentTerm
 		lastLogTerm := getLastLogTermNL(&rf.log)
 		lastLogIndex := getLastLogIndexNL(&rf.log)
-		rf.votedFor = rf.me
+		rf.voteNL(rf.me)
 		rf.lastElectionTerm = term
 		rf.lastElectionTime = time.Now()
 		rf.mu.Unlock()
@@ -469,7 +473,6 @@ func (rf *Raft) dealWithRequestVoteReply(term int, succeed *int, total int, repl
 			return false
 		}
 	} else if reply.Term > rf.currentTerm {
-		rf.currentTerm = term
 		rf.convertToFollowerNL(reply.Term)
 
 		return false
@@ -695,7 +698,12 @@ func (rf *Raft) commitNL(newCommitIndex int) {
 func (rf *Raft) convertToFollowerNL(term int) {
 	rf.currentTerm = term
 	rf.role = Follower
-	rf.votedFor = -1
+	rf.voteNL(-1)
+}
+
+func (rf *Raft) voteNL(index int) {
+	rf.votedFor = index
+	rf.persistNL()
 }
 
 //
