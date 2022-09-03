@@ -52,14 +52,17 @@ func hasPrevLogNL(log *Log, index int, term int) bool {
 	return len(log.Logs) > index && log.Logs[index].Term == term
 }
 
-func getLogInfoBeforeConflicting(log *Log) (int, int) {
-	conflictingTerm := log.Logs[len(log.Logs)-1].Term
-	conflictingIndex := len(log.Logs) - 1
+func getLogInfoBeforeConflictingNL(log *Log, index int) (int, int) {
+	if len(log.Logs) <= index {
+		index = len(log.Logs) - 1
+	}
 
-	for i := len(log.Logs) - 2; i >= 1; i-- {
-		if conflictingTerm == log.Logs[i].Term {
+	conflictingTerm := log.Logs[index].Term
+	var conflictingIndex int
+
+	for i := index; i >= 0; i-- {
+		if conflictingTerm != log.Logs[i].Term {
 			conflictingIndex = i
-		} else {
 			break
 		}
 	}
@@ -86,7 +89,7 @@ func getCommitLogNL(log *Log, prevCommit int, newCommit int) []ApplyMsg {
 	return ret
 }
 
-func getLastLogIndexForTerm(log *Log, term int) int {
+func getLastLogIndexForTermNL(log *Log, term int) int {
 	var left = 0
 	var right = len(log.Logs) - 1
 
@@ -100,4 +103,8 @@ func getLastLogIndexForTerm(log *Log, term int) int {
 	}
 
 	return left
+}
+
+func getTermForGivenIndexNL(log *Log, index int) int {
+	return log.Logs[index].Term
 }

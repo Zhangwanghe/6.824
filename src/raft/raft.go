@@ -277,13 +277,12 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 		if !hasPrevLogNL(&rf.log, args.PrevLogIndex, args.PrevLogTerm) {
 			reply.Success = false
-			reply.ConflictTerm, reply.FirstLogIndexForConflictTerm = getLogInfoBeforeConflicting(&rf.log)
+			reply.ConflictTerm, reply.FirstLogIndexForConflictTerm = getLogInfoBeforeConflictingNL(&rf.log, args.PrevLogIndex)
 			return
 		}
 
 		appendAndRemoveConflictinLogFromIndexNL(&rf.log, args.PrevLogIndex, args.Entries)
 		rf.persistNL()
-
 		reply.Success = true
 		reply.LastLogIndex = args.PrevLogIndex + len(args.Entries)
 
@@ -293,6 +292,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 
 	}
+
 }
 
 func Min(x int, y int) int {
@@ -341,12 +341,10 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	if isLeader {
 		appendLogNL(&rf.log, term, command)
 		rf.persistNL()
-
 		index = getLastLogIndexNL(&rf.log)
 		rf.nextIndex[rf.me] = index + 1
 		rf.matchIndex[rf.me] = index
 	}
-
 	return index, term, isLeader
 }
 
@@ -609,6 +607,7 @@ func (rf *Raft) synchronize(term int) {
 			break
 		}
 	}
+
 }
 
 func (rf *Raft) makeAppendEntriesArgs(term int, index int) AppendEntriesArgs {
@@ -639,7 +638,6 @@ func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply, 
 
 	if reply.Term > rf.currentTerm {
 		rf.convertToFollowerNL(reply.Term)
-
 		return false
 	}
 
@@ -651,8 +649,20 @@ func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply, 
 	} else if reply.FollowerIndex != -1 {
 		// since term inconsistency has been disposed above
 		// we can assume if we are here, there is log inconsistency
+
 		// todo optimized by using a map to save term-last log index relation
-		logIndex := getLastLogIndexForTerm(&rf.log, reply.ConflictTerm)
+
+		// here we use a tricky startegy instead of one in the paper:
+		// 1. when the fllowers log conflicts with leaders, returns the term just less than the conflicting log's term
+		// 2. the leader finds the first log with term eqaul to the returned term
+		// 3. if we use strategy from the paper, we have to distinguish between following conditions:
+		// (1) S1 : 1 3 S2:1 1(leader) S3: 1 1
+		// S1 returned term 3 and index 2, leader's term for log 2 is 1 (< 3)
+		// leader should find the log with term which is less than 1 (or fall in inifinite loop)
+		// (2) S1 : 1 3 S2:1 4 4(leader) S3: 1 4 4
+		// leader's term for log 2 is 4 (> 3) leader can just find the term which is less than log[2].Term
+		// 4. In our strategy, we just send redundant logs as (1) for both cases.
+		logIndex := getLastLogIndexForTermNL(&rf.log, reply.ConflictTerm)
 		rf.nextIndex[reply.FollowerIndex] = Min(logIndex, reply.FirstLogIndexForConflictTerm) + 1
 
 	} else {
@@ -682,8 +692,9 @@ func (rf *Raft) leaderCommitNL(followerIndex int) {
 	copy(sortedIndex, rf.matchIndex)
 	sort.Ints(sortedIndex)
 
-	if sortedIndex[len(sortedIndex)/2] > rf.commitIndex {
-		rf.commitNL(sortedIndex[len(sortedIndex)/2])
+	majorityIndex := sortedIndex[len(sortedIndex)/2]
+	if majorityIndex > rf.commitIndex && getTermForGivenIndexNL(&rf.log, majorityIndex) == rf.currentTerm {
+		rf.commitNL(majorityIndex)
 	}
 }
 
