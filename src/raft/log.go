@@ -8,7 +8,7 @@ type Entry struct {
 }
 
 func (e *Entry) String() string {
-	return fmt.Sprintf("T %v", e.Term)
+	return fmt.Sprintf("term = %d, command = %v", e.Term, e.Command)
 }
 
 type Log struct {
@@ -76,7 +76,18 @@ func appendAndRemoveConflictinLogFromIndexNL(log *Log, lastLogIndex int, entries
 		return
 	}
 
-	log.Logs = append(log.Logs[:lastLogIndex+1], entries...)
+	i := lastLogIndex + 1
+	for ; i < Min(len(log.Logs), lastLogIndex+1+len(entries)); i++ {
+		if log.Logs[i].Term != entries[i-lastLogIndex-1].Term {
+			break
+		}
+	}
+
+	if i-lastLogIndex-1 >= len(entries) {
+		return
+	}
+
+	log.Logs = append(log.Logs[:i], entries[i-lastLogIndex-1:]...)
 }
 
 func getCommitLogNL(log *Log, prevCommit int, newCommit int) []ApplyMsg {
