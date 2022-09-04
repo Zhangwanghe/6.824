@@ -66,7 +66,7 @@ const (
 	Leader    Role = 3
 )
 
-const HeartBeatDuration = time.Duration(150) * time.Millisecond
+const HeartBeatDuration = time.Duration(100) * time.Millisecond
 const CheckHeartBeatDuration = time.Duration(10) * time.Millisecond
 
 type Raft struct {
@@ -89,12 +89,12 @@ type Raft struct {
 	nextIndex  []int
 	matchIndex []int
 
-	role                     Role
-	lastElectionTerm         int
-	lastRecieveHeartBeatTime time.Time
-	lastSendHeartBeatTime    time.Time
-	lastElectionTime         time.Time
-	commitChan               chan ApplyMsg
+	role                  Role
+	lastElectionTerm      int
+	lastSendHeartBeatTime time.Time
+	lastElectionTime      time.Time
+	electionTimeout       time.Duration
+	commitChan            chan ApplyMsg
 
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
@@ -220,7 +220,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.convertToFollowerNL(args.Term)
 	}
 
-	if rf.votedFor == -1 && !rf.isLogUpToDateNL(args.LastLogIndex, args.LastLogTerm) {
+	if (rf.votedFor == -1 || rf.votedFor == args.CandidateId) && !rf.isLogUpToDateNL(args.LastLogIndex, args.LastLogTerm) {
 		reply.VoteGranted = true
 		rf.voteNL(args.CandidateId)
 	}
@@ -272,7 +272,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		reply.Success = false
 		return
 	} else {
-		rf.lastRecieveHeartBeatTime = time.Now()
 		rf.convertToFollowerNL(args.Term)
 
 		if !hasPrevLogNL(&rf.log, args.PrevLogIndex, args.PrevLogTerm) {
@@ -344,6 +343,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 		index = getLastLogIndexNL(&rf.log)
 		rf.nextIndex[rf.me] = index + 1
 		rf.matchIndex[rf.me] = index
+
+		go rf.synchronize(term)
 	}
 	return index, term, isLeader
 }
@@ -387,10 +388,9 @@ func (rf *Raft) ticker() {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
-		electionTimeOut := (200 + rand.Intn(200))
 		for rf.killed() == false {
 			rf.mu.Lock()
-			timeOut := rf.isElecitonTimeOutNL(time.Duration(electionTimeOut) * time.Millisecond)
+			timeOut := rf.isElecitonTimeOutNL()
 			rf.mu.Unlock()
 
 			if timeOut {
@@ -415,7 +415,7 @@ func (rf *Raft) ticker() {
 		lastLogIndex := getLastLogIndexNL(&rf.log)
 		rf.voteNL(rf.me)
 		rf.lastElectionTerm = term
-		rf.lastElectionTime = time.Now()
+		rf.resetElectionTimerNL()
 		rf.mu.Unlock()
 
 		go rf.election(term, lastLogTerm, lastLogIndex)
@@ -433,7 +433,18 @@ func (rf *Raft) election(term int, lastLogTerm int, lastLogIndex int) {
 		go func(index int) {
 			args := RequestVoteArgs{term, rf.me, lastLogTerm, lastLogIndex}
 			reply := RequestVoteReply{}
-			rf.sendRequestVote(index, &args, &reply)
+			// wait for success
+			// todo should we set a timer for timedout requestvote rpc in case too frequent elect
+			for !rf.sendRequestVote(index, &args, &reply) {
+				rf.mu.Lock()
+				valid := rf.isValidElectionNL(term)
+				rf.mu.Unlock()
+
+				if !valid {
+					break
+				}
+			}
+
 			ch <- reply
 		}(index)
 	}
@@ -472,7 +483,6 @@ func (rf *Raft) dealWithRequestVoteReply(term int, succeed *int, total int, repl
 		}
 	} else if reply.Term > rf.currentTerm {
 		rf.convertToFollowerNL(reply.Term)
-
 		return false
 	} else if total-*succeed > len(rf.peers)/2 {
 		// if more than half fail, stop election
@@ -490,8 +500,8 @@ func (rf *Raft) isValidElectionNL(term int) bool {
 	return true
 }
 
-func (rf *Raft) isElecitonTimeOutNL(duration time.Duration) bool {
-	return rf.lastElectionTime.Add(duration).Before(time.Now())
+func (rf *Raft) isElecitonTimeOutNL() bool {
+	return rf.lastElectionTime.Add(rf.electionTimeout).Before(time.Now())
 }
 
 func (rf *Raft) heartBeatCheck() {
@@ -507,7 +517,7 @@ func (rf *Raft) heartBeatCheck() {
 }
 
 func (rf *Raft) isHeartBeatTimeOutNL() bool {
-	return rf.lastRecieveHeartBeatTime.Add(HeartBeatDuration*2).Before(time.Now()) && rf.role == Follower
+	return rf.lastElectionTime.Add(rf.electionTimeout).Before(time.Now()) && rf.role == Follower
 }
 
 func (rf *Raft) convertToLeaderNL() {
@@ -599,10 +609,9 @@ func (rf *Raft) synchronize(term int) {
 		}(ch, term, index)
 	}
 
-	failed := 0
 	for i := 0; i < len(rf.peers)-1; i++ {
 		reply := <-ch
-		ret := rf.dealWithAppendEntriesReply(term, &reply, &failed)
+		ret := rf.dealWithAppendEntriesReply(term, &reply)
 		if !ret {
 			break
 		}
@@ -628,7 +637,7 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply, failed *int) bool {
+func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply) bool {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
@@ -649,9 +658,7 @@ func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply, 
 	} else if reply.FollowerIndex != -1 {
 		// since term inconsistency has been disposed above
 		// we can assume if we are here, there is log inconsistency
-
 		// todo optimized by using a map to save term-last log index relation
-
 		// here we use a tricky startegy instead of one in the paper:
 		// 1. when the fllowers log conflicts with leaders, returns the term just less than the conflicting log's term
 		// 2. the leader finds the first log with term eqaul to the returned term
@@ -665,13 +672,8 @@ func (rf *Raft) dealWithAppendEntriesReply(term int, reply *AppendEntriesReply, 
 		logIndex := getLastLogIndexForTermNL(&rf.log, reply.ConflictTerm)
 		rf.nextIndex[reply.FollowerIndex] = Min(logIndex, reply.FirstLogIndexForConflictTerm) + 1
 
-	} else {
-		*failed++
-		if *failed > len(rf.peers)/2 {
-			rf.convertToCandidateNL()
-			return false
-		}
 	}
+
 	return true
 }
 
@@ -707,14 +709,23 @@ func (rf *Raft) commitNL(newCommitIndex int) {
 }
 
 func (rf *Raft) convertToFollowerNL(term int) {
-	rf.currentTerm = term
+	if term != rf.currentTerm {
+		rf.voteNL(-1)
+		rf.currentTerm = term
+	}
+
 	rf.role = Follower
-	rf.voteNL(-1)
+	rf.resetElectionTimerNL()
 }
 
 func (rf *Raft) voteNL(index int) {
 	rf.votedFor = index
 	rf.persistNL()
+}
+
+func (rf *Raft) resetElectionTimerNL() {
+	rf.lastElectionTime = time.Now()
+	rf.electionTimeout = time.Duration(300+rand.Intn(300)) * time.Millisecond
 }
 
 //
@@ -743,9 +754,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.nextIndex = make([]int, len(peers))
 	rf.matchIndex = make([]int, len(peers))
 	rf.lastElectionTerm = -1
-	rf.lastRecieveHeartBeatTime = time.Now()
 	rf.lastSendHeartBeatTime = time.Now()
-	rf.lastElectionTime = time.Now()
+	rf.resetElectionTimerNL()
 	rf.commitChan = applyCh
 
 	// Your initialization code here (2A, 2B, 2C).
