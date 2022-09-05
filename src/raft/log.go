@@ -45,8 +45,7 @@ func getLastLogTermNL(log *Log) int {
 func getPrevLogAndNewEntriesNL(log *Log, index int) (int, int, []Entry) {
 	index = getIndexInCurLog(log, index)
 	if index <= 0 {
-		// we are waiting for installsnapshot finish or there is no new entry in this condition
-		return 0, 0, make([]Entry, 0)
+		return log.StartIndex, log.Logs[0].Term, make([]Entry, 0)
 	}
 
 	entries := make([]Entry, len(log.Logs)-index)
@@ -55,12 +54,14 @@ func getPrevLogAndNewEntriesNL(log *Log, index int) (int, int, []Entry) {
 }
 
 func hasPrevLogNL(log *Log, index int, term int) bool {
+	if index == 0 && term == 0 {
+		// heartbeat
+		return true
+	}
+
 	index = getIndexInCurLog(log, index)
 	if index < 0 {
 		return false
-	} else if index == 0 && term == 0 {
-		// heartbeat
-		return true
 	}
 
 	return len(log.Logs) > index && log.Logs[index].Term == term
@@ -96,11 +97,6 @@ func appendAndRemoveConflictinLogFromIndexNL(log *Log, lastLogIndex int, entries
 	}
 
 	lastLogIndex = getIndexInCurLog(log, lastLogIndex)
-	if lastLogIndex < 0 {
-		// todo receive a msg from previous call
-		return
-	}
-
 	i := lastLogIndex + 1
 	for ; i < Min(len(log.Logs), lastLogIndex+1+len(entries)); i++ {
 		if log.Logs[i].Term != entries[i-lastLogIndex-1].Term {
