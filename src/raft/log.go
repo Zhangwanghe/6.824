@@ -12,6 +12,7 @@ func (e *Entry) String() string {
 }
 
 type Log struct {
+	// save the last log term from snapshot in log[0]
 	Logs       []Entry
 	StartIndex int
 }
@@ -21,12 +22,20 @@ func makeEmptyLog() Log {
 	return Log{make([]Entry, 1), 0}
 }
 
+func getTotalIndex(log *Log, index int) int {
+	return log.StartIndex + index
+}
+
+func getIndexInCurLog(log *Log, index int) int {
+	return index - log.StartIndex
+}
+
 func appendLogNL(log *Log, term int, command interface{}) {
 	log.Logs = append(log.Logs, Entry{term, command})
 }
 
 func getLastLogIndexNL(log *Log) int {
-	return len(log.Logs) - 1
+	return getTotalIndex(log, len(log.Logs)-1)
 }
 
 func getLastLogTermNL(log *Log) int {
@@ -34,17 +43,18 @@ func getLastLogTermNL(log *Log) int {
 }
 
 func getPrevLogAndNewEntriesNL(log *Log, index int) (int, int, []Entry) {
+	index = getIndexInCurLog(log, index)
+	if index <= 0 {
+		return 0, 0, make([]Entry, 0)
+	}
+
 	entries := make([]Entry, len(log.Logs)-index)
 	copy(entries, log.Logs[index:])
-
-	if index <= 1 {
-		return index - 1, -1, entries
-	} else {
-		return index - 1, log.Logs[index-1].Term, entries
-	}
+	return index - 1, log.Logs[index-1].Term, entries
 }
 
 func hasPrevLogNL(log *Log, index int, term int) bool {
+	index = getIndexInCurLog(log, index)
 	if index <= 0 {
 		return true
 	}
@@ -53,12 +63,13 @@ func hasPrevLogNL(log *Log, index int, term int) bool {
 }
 
 func getLogInfoBeforeConflictingNL(log *Log, index int) (int, int) {
+	index = getIndexInCurLog(log, index)
 	if len(log.Logs) <= index {
 		index = len(log.Logs) - 1
 	}
 
 	conflictingTerm := log.Logs[index].Term
-	var conflictingIndex int
+	conflictingIndex := 0
 
 	for i := index; i >= 0; i-- {
 		if conflictingTerm != log.Logs[i].Term {
@@ -67,7 +78,7 @@ func getLogInfoBeforeConflictingNL(log *Log, index int) (int, int) {
 		}
 	}
 
-	return conflictingTerm, conflictingIndex
+	return conflictingTerm, getTotalIndex(log, conflictingIndex)
 }
 
 func appendAndRemoveConflictinLogFromIndexNL(log *Log, lastLogIndex int, entries []Entry) {
@@ -76,6 +87,7 @@ func appendAndRemoveConflictinLogFromIndexNL(log *Log, lastLogIndex int, entries
 		return
 	}
 
+	lastLogIndex = getIndexInCurLog(log, lastLogIndex)
 	i := lastLogIndex + 1
 	for ; i < Min(len(log.Logs), lastLogIndex+1+len(entries)); i++ {
 		if log.Logs[i].Term != entries[i-lastLogIndex-1].Term {
@@ -91,6 +103,9 @@ func appendAndRemoveConflictinLogFromIndexNL(log *Log, lastLogIndex int, entries
 }
 
 func getCommitLogNL(log *Log, prevCommit int, newCommit int) []ApplyMsg {
+	prevCommit = getIndexInCurLog(log, prevCommit)
+	newCommit = getIndexInCurLog(log, newCommit)
+
 	ret := make([]ApplyMsg, newCommit-prevCommit)
 	for i := prevCommit + 1; i <= newCommit; i++ {
 		ret[i-prevCommit-1].Command = log.Logs[i].Command
@@ -113,9 +128,10 @@ func getLastLogIndexForTermNL(log *Log, term int) int {
 		}
 	}
 
-	return left
+	return getTotalIndex(log, left)
 }
 
 func getTermForGivenIndexNL(log *Log, index int) int {
+	index = getIndexInCurLog(log, index)
 	return log.Logs[index].Term
 }
