@@ -45,17 +45,21 @@ func getLastLogTermNL(log *Log) int {
 func getPrevLogAndNewEntriesNL(log *Log, index int) (int, int, []Entry) {
 	index = getIndexInCurLog(log, index)
 	if index <= 0 {
+		// we are waiting for installsnapshot finish or there is no new entry in this condition
 		return 0, 0, make([]Entry, 0)
 	}
 
 	entries := make([]Entry, len(log.Logs)-index)
 	copy(entries, log.Logs[index:])
-	return index - 1, log.Logs[index-1].Term, entries
+	return getTotalIndex(log, index-1), log.Logs[index-1].Term, entries
 }
 
 func hasPrevLogNL(log *Log, index int, term int) bool {
 	index = getIndexInCurLog(log, index)
-	if index <= 0 {
+	if index < 0 {
+		return false
+	} else if index == 0 && term == 0 {
+		// heartbeat
 		return true
 	}
 
@@ -64,6 +68,10 @@ func hasPrevLogNL(log *Log, index int, term int) bool {
 
 func getLogInfoBeforeConflictingNL(log *Log, index int) (int, int) {
 	index = getIndexInCurLog(log, index)
+	if index < 0 {
+		return log.Logs[0].Term, log.StartIndex
+	}
+
 	if len(log.Logs) <= index {
 		index = len(log.Logs) - 1
 	}
@@ -88,6 +96,11 @@ func appendAndRemoveConflictinLogFromIndexNL(log *Log, lastLogIndex int, entries
 	}
 
 	lastLogIndex = getIndexInCurLog(log, lastLogIndex)
+	if lastLogIndex < 0 {
+		// todo receive a msg from previous call
+		return
+	}
+
 	i := lastLogIndex + 1
 	for ; i < Min(len(log.Logs), lastLogIndex+1+len(entries)); i++ {
 		if log.Logs[i].Term != entries[i-lastLogIndex-1].Term {
@@ -109,7 +122,7 @@ func getCommitLogNL(log *Log, prevCommit int, newCommit int) []ApplyMsg {
 	ret := make([]ApplyMsg, newCommit-prevCommit)
 	for i := prevCommit + 1; i <= newCommit; i++ {
 		ret[i-prevCommit-1].Command = log.Logs[i].Command
-		ret[i-prevCommit-1].CommandIndex = i
+		ret[i-prevCommit-1].CommandIndex = getTotalIndex(log, i)
 		ret[i-prevCommit-1].CommandValid = true
 	}
 	return ret
@@ -134,4 +147,10 @@ func getLastLogIndexForTermNL(log *Log, term int) int {
 func getTermForGivenIndexNL(log *Log, index int) int {
 	index = getIndexInCurLog(log, index)
 	return log.Logs[index].Term
+}
+
+func makeSnapshotNL(log *Log, index int) {
+	log.Logs[0].Term = log.Logs[getIndexInCurLog(log, index)].Term
+	log.Logs = append(log.Logs[0:1], log.Logs[getIndexInCurLog(log, index)+1:]...)
+	log.StartIndex = index
 }
