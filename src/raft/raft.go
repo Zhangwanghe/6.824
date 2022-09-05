@@ -178,7 +178,10 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
-
+	// todo will index > commitIndex ?
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	makeSnapshotNL(&rf.log, index)
 }
 
 //
@@ -283,11 +286,11 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		appendAndRemoveConflictinLogFromIndexNL(&rf.log, args.PrevLogIndex, args.Entries)
 		rf.persistNL()
 		reply.Success = true
+		// todo use index from log
 		reply.LastLogIndex = args.PrevLogIndex + len(args.Entries)
 
 		if args.LeaderCommit > rf.commitIndex {
-			newCommitIndex := Min(args.LeaderCommit, getLastLogIndexNL(&rf.log))
-			rf.commitNL(newCommitIndex)
+			rf.commitIndex = Min(args.LeaderCommit, getLastLogIndexNL(&rf.log))
 		}
 
 	}
@@ -328,7 +331,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	term = rf.currentTerm
 	isLeader = rf.role == Leader
 
-	// todo
 	// consider following sequence with S0 S1 S2:
 	// 1. SO becomes leader
 	// 2. S0 disconnects
@@ -336,7 +338,8 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// 4. S0 reconnects before it discovers network failure
 	// 5. both S0 and S1 consider they are leaders.
 	// 6. A Start invocation may be assigned to a wrong server, which is S0 in this case
-	// should we resonse after we apply all states
+	// should we resonse after we apply all states?
+	// This is a possible condition and clients should try again
 	if isLeader {
 		appendLogNL(&rf.log, term, command)
 		rf.persistNL()
@@ -696,16 +699,8 @@ func (rf *Raft) leaderCommitNL(followerIndex int) {
 
 	majorityIndex := sortedIndex[len(sortedIndex)/2]
 	if majorityIndex > rf.commitIndex && getTermForGivenIndexNL(&rf.log, majorityIndex) == rf.currentTerm {
-		rf.commitNL(majorityIndex)
+		rf.commitIndex = majorityIndex
 	}
-}
-
-func (rf *Raft) commitNL(newCommitIndex int) {
-	msgs := getCommitLogNL(&rf.log, rf.commitIndex, newCommitIndex)
-	for _, msg := range msgs {
-		rf.commitChan <- msg
-	}
-	rf.commitIndex = newCommitIndex
 }
 
 func (rf *Raft) convertToFollowerNL(term int) {
@@ -726,6 +721,27 @@ func (rf *Raft) voteNL(index int) {
 func (rf *Raft) resetElectionTimerNL() {
 	rf.lastElectionTime = time.Now()
 	rf.electionTimeout = time.Duration(300+rand.Intn(300)) * time.Millisecond
+}
+
+func (rf *Raft) applyLogs() {
+	for !rf.killed() {
+		rf.mu.Lock()
+		commitIndex := rf.commitIndex
+		msgs := getCommitLogNL(&rf.log, rf.lastApplied, commitIndex)
+		rf.mu.Unlock()
+
+		if len(msgs) > 0 {
+			for _, msg := range msgs {
+				rf.commitChan <- msg
+			}
+
+			rf.mu.Lock()
+			rf.lastApplied = commitIndex
+			rf.mu.Unlock()
+		} else {
+			time.Sleep(CheckHeartBeatDuration)
+		}
+	}
 }
 
 //
@@ -767,6 +783,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.convertToCandidateNL()
 
 	go rf.heartBeatCheck()
+
+	go rf.applyLogs()
 
 	return rf
 }
