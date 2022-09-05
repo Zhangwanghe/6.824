@@ -122,16 +122,25 @@ func (rf *Raft) GetState() (int, bool) {
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
 //
-func (rf *Raft) persistNL() {
-	// Your code here (2C).
-	// Example:
+
+func (rf *Raft) getStateData() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
 	data := w.Bytes()
-	rf.persister.SaveRaftState(data)
+	return data
+}
+
+func (rf *Raft) persistNL() {
+	// Your code here (2C).
+	rf.persister.SaveRaftState(rf.getStateData())
+}
+
+func (rf *Raft) persistStateAndSnapshotNL(snapshot []byte) {
+	// Your code here (2D).
+	rf.persister.SaveStateAndSnapshot(rf.getStateData(), snapshot)
 }
 
 //
@@ -182,6 +191,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	makeSnapshotNL(&rf.log, index)
+	rf.persistStateAndSnapshotNL(snapshot)
 }
 
 //
