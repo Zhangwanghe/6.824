@@ -85,6 +85,9 @@ type Raft struct {
 	commitIndex int
 	lastApplied int
 
+	// add for 2D
+	snapshot []byte
+
 	// volatile on Leader
 	nextIndex  []int
 	matchIndex []int
@@ -312,6 +315,49 @@ func Min(x int, y int) int {
 		return y
 	} else {
 		return x
+	}
+}
+
+type InstallSnapShotArgs struct {
+	// Your data here (2D).
+	Term              int
+	LeaderId          int
+	LastIncludedIndex int
+	LastIncludedTerm  int
+	data              []byte
+}
+
+//
+// example RequestVote RPC reply structure.
+// field names must start with capital letters!
+//
+type InstallSnapShotReply struct {
+	// Your data here (2D).
+	Term int
+}
+
+func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapShotReply) {
+	// Your code here (2D).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+	if args.Term < reply.Term || args.LastIncludedIndex <= getStartIndexNL(&rf.log) {
+		// no new information
+		return
+	} else {
+		rf.snapshot = make([]byte, len(args.data))
+		copy(rf.snapshot, args.data)
+
+		if args.LastIncludedIndex < getLastLogIndexNL(&rf.log) {
+			// todo why should we check term?
+			makeSnapshotNL(&rf.log, args.LastIncludedIndex)
+		} else {
+			rf.log = makeEmptyLog()
+		}
+
+		rf.log.StartIndex = args.LastIncludedIndex
+		rf.log.Logs[0].Term = args.LastIncludedTerm
 	}
 }
 

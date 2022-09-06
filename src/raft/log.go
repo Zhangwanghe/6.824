@@ -150,3 +150,7 @@ func makeSnapshotNL(log *Log, index int) {
 	log.Logs = append(log.Logs[0:1], log.Logs[getIndexInCurLog(log, index)+1:]...)
 	log.StartIndex = index
 }
+
+func getStartIndexNL(log *Log) int {
+	return log.StartIndex
+}
