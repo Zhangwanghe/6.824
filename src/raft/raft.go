@@ -324,7 +324,7 @@ type InstallSnapShotArgs struct {
 	LeaderId          int
 	LastIncludedIndex int
 	LastIncludedTerm  int
-	data              []byte
+	Data              []byte
 }
 
 //
@@ -346,8 +346,8 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapSho
 		// no new information
 		return
 	} else {
-		rf.snapshot = make([]byte, len(args.data))
-		copy(rf.snapshot, args.data)
+		rf.snapshot = make([]byte, len(args.Data))
+		copy(rf.snapshot, args.Data)
 
 		if args.LastIncludedIndex < getLastLogIndexNL(&rf.log) {
 			// todo why should we check term?
@@ -359,7 +359,7 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapSho
 		rf.log.StartIndex = args.LastIncludedIndex
 		rf.log.Logs[0].Term = args.LastIncludedTerm
 
-		rf.appliedSnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.data)
+		rf.appliedSnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data)
 	}
 }
 
@@ -825,7 +825,7 @@ func (rf *Raft) makeInstallSnapShotArgs(term int) InstallSnapShotArgs {
 	ret.LeaderId = rf.me
 	ret.LastIncludedIndex = getStartIndexNL(&rf.log)
 	ret.LastIncludedTerm = getStartTermNL(&rf.log)
-	ret.data = rf.getStateDataNL()
+	ret.Data = rf.getStateDataNL()
 
 	return ret
 }
