@@ -358,7 +358,23 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapSho
 
 		rf.log.StartIndex = args.LastIncludedIndex
 		rf.log.Logs[0].Term = args.LastIncludedTerm
+
+		rf.appliedSnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.data)
 	}
+}
+
+func (rf *Raft) appliedSnapshot(LastIncludedIndex int, LastIncludedTerm int, data []byte) {
+	snapshot := make([]byte, len(data))
+	copy(snapshot, data)
+
+	go func() {
+		msg := ApplyMsg{}
+		msg.SnapshotValid = true
+		msg.SnapshotIndex = LastIncludedIndex
+		msg.SnapshotTerm = LastIncludedTerm
+		msg.Snapshot = snapshot
+		rf.commitChan <- msg
+	}()
 }
 
 //
@@ -658,8 +674,8 @@ func (rf *Raft) synchronize(term int) {
 			return
 		}
 
+		args := rf.makeAppendEntriesArgs(term, index)
 		go func(ch chan AppendEntriesReply, term int, index int) {
-			args := rf.makeAppendEntriesArgs(term, index)
 			reply := AppendEntriesReply{}
 			ok := rf.sendAppendEntries(index, &args, &reply)
 			// set followerIndex to -1
@@ -777,6 +793,10 @@ func (rf *Raft) sendSnapShot() {
 				return
 			}
 
+			if !rf.needSnapshot(index) {
+				continue
+			}
+
 			go func(term int, index int) {
 				args := rf.makeInstallSnapShotArgs(term)
 				reply := InstallSnapShotReply{}
@@ -787,6 +807,13 @@ func (rf *Raft) sendSnapShot() {
 
 		time.Sleep(HeartBeatDuration)
 	}
+}
+
+func (rf *Raft) needSnapshot(index int) bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	return rf.nextIndex[index] <= getStartIndexNL(&rf.log)
 }
 
 func (rf *Raft) makeInstallSnapShotArgs(term int) InstallSnapShotArgs {
