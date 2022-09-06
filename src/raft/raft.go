@@ -173,6 +173,14 @@ func (rf *Raft) readPersist(data []byte) {
 	}
 }
 
+func (rf *Raft) readSnapshot(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		return
+	}
+	// Your code here (2D).
+	rf.snapshot = data
+}
+
 //
 // A service wants to switch to snapshot.  Only do so if Raft hasn't
 // have more recent info since it communicate the snapshot on applyCh.
@@ -194,6 +202,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	makeSnapshotNL(&rf.log, index)
+	rf.snapshot = snapshot
 	rf.persistStateAndSnapshotNL(snapshot)
 }
 
@@ -359,22 +368,25 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapSho
 		rf.log.StartIndex = args.LastIncludedIndex
 		rf.log.Logs[0].Term = args.LastIncludedTerm
 
-		rf.appliedSnapshot(args.LastIncludedIndex, args.LastIncludedTerm, args.Data)
+		rf.lastApplied = args.LastIncludedIndex
+		if args.LastIncludedIndex > rf.commitIndex {
+			rf.commitIndex = args.LastIncludedIndex
+		}
+
+		// todo this can be done in a separate goroutine
+		// here we simply do it in current thread,
+		// otherwise we should consider the order of updating lastApplied and checking which logs to commit in rf.ogs
+		rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm)
 	}
 }
 
-func (rf *Raft) appliedSnapshot(LastIncludedIndex int, LastIncludedTerm int, data []byte) {
-	snapshot := make([]byte, len(data))
-	copy(snapshot, data)
-
-	go func() {
-		msg := ApplyMsg{}
-		msg.SnapshotValid = true
-		msg.SnapshotIndex = LastIncludedIndex
-		msg.SnapshotTerm = LastIncludedTerm
-		msg.Snapshot = snapshot
-		rf.commitChan <- msg
-	}()
+func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int) {
+	msg := ApplyMsg{}
+	msg.SnapshotValid = true
+	msg.SnapshotIndex = LastIncludedIndex
+	msg.SnapshotTerm = LastIncludedTerm
+	msg.Snapshot = rf.snapshot
+	rf.commitChan <- msg
 }
 
 //
@@ -825,7 +837,8 @@ func (rf *Raft) makeInstallSnapShotArgs(term int) InstallSnapShotArgs {
 	ret.LeaderId = rf.me
 	ret.LastIncludedIndex = getStartIndexNL(&rf.log)
 	ret.LastIncludedTerm = getStartTermNL(&rf.log)
-	ret.Data = rf.getStateDataNL()
+	// follower copy data
+	ret.Data = rf.snapshot
 
 	return ret
 }
@@ -916,6 +929,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+
+	// initailize from snapshot
+	rf.readSnapshot(persister.ReadSnapshot())
 
 	// start ticker goroutine to start elections
 	rf.convertToCandidateNL()
