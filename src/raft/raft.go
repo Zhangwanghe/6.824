@@ -86,7 +86,8 @@ type Raft struct {
 	lastApplied int
 
 	// add for 2D
-	snapshot []byte
+	snapshot       []byte
+	hasNewSnapshot bool
 
 	// volatile on Leader
 	nextIndex  []int
@@ -132,6 +133,8 @@ func (rf *Raft) getStateDataNL() []byte {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
+	e.Encode(rf.lastApplied)
+	e.Encode(rf.commitIndex)
 	data := w.Bytes()
 	return data
 }
@@ -141,9 +144,9 @@ func (rf *Raft) persistNL() {
 	rf.persister.SaveRaftState(rf.getStateDataNL())
 }
 
-func (rf *Raft) persistStateAndSnapshotNL(snapshot []byte) {
+func (rf *Raft) persistStateAndSnapshotNL() {
 	// Your code here (2D).
-	rf.persister.SaveStateAndSnapshot(rf.getStateDataNL(), snapshot)
+	rf.persister.SaveStateAndSnapshot(rf.getStateDataNL(), rf.snapshot)
 }
 
 //
@@ -160,9 +163,13 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var votedFor int
 	var log Log
+	var lastApplied int
+	var commitIndex int
 	if d.Decode(&currentTerm) != nil ||
 		d.Decode(&votedFor) != nil ||
-		d.Decode(&log) != nil {
+		d.Decode(&log) != nil ||
+		d.Decode(&lastApplied) != nil ||
+		d.Decode(&commitIndex) != nil {
 
 		// todo should we trigger any error here
 		return
@@ -170,6 +177,8 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		rf.log = log
+		rf.lastApplied = Min(lastApplied, getStartIndexNL(&rf.log))
+		rf.commitIndex = commitIndex
 	}
 }
 
@@ -203,7 +212,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	defer rf.mu.Unlock()
 	makeSnapshotNL(&rf.log, index)
 	rf.snapshot = snapshot
-	rf.persistStateAndSnapshotNL(snapshot)
+	rf.persistStateAndSnapshotNL()
 }
 
 //
@@ -306,7 +315,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		}
 
 		appendAndRemoveConflictinLogFromIndexNL(&rf.log, args.PrevLogIndex, args.Entries)
-		rf.persistNL()
+
 		reply.Success = true
 		// todo use index from log
 		reply.LastLogIndex = args.PrevLogIndex + len(args.Entries)
@@ -315,6 +324,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.commitIndex = Min(args.LeaderCommit, getLastLogIndexNL(&rf.log))
 		}
 
+		rf.persistNL()
 	}
 
 }
@@ -357,6 +367,7 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapSho
 	} else {
 		rf.snapshot = make([]byte, len(args.Data))
 		copy(rf.snapshot, args.Data)
+		rf.hasNewSnapshot = true
 
 		if args.LastIncludedIndex < getLastLogIndexNL(&rf.log) {
 			// todo why should we check term?
@@ -367,26 +378,33 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapSho
 
 		rf.log.StartIndex = args.LastIncludedIndex
 		rf.log.Logs[0].Term = args.LastIncludedTerm
-
-		rf.lastApplied = args.LastIncludedIndex
-		if args.LastIncludedIndex > rf.commitIndex {
-			rf.commitIndex = args.LastIncludedIndex
-		}
-
-		// todo this can be done in a separate goroutine
-		// here we simply do it in current thread,
-		// otherwise we should consider the order of updating lastApplied and checking which logs to commit in rf.ogs
-		rf.applySnapshot(args.LastIncludedIndex, args.LastIncludedTerm)
 	}
 }
 
-func (rf *Raft) applySnapshot(LastIncludedIndex int, LastIncludedTerm int) {
+func (rf *Raft) applySnapshot() bool {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	if !rf.hasNewSnapshot {
+		return false
+	}
+	rf.hasNewSnapshot = false
+
+	lastIncludedIndex := getStartIndexNL(&rf.log)
+	rf.lastApplied = getStartIndexNL(&rf.log)
+	if lastIncludedIndex > rf.commitIndex {
+		rf.commitIndex = lastIncludedIndex
+	}
+	rf.persistStateAndSnapshotNL()
+
 	msg := ApplyMsg{}
 	msg.SnapshotValid = true
-	msg.SnapshotIndex = LastIncludedIndex
-	msg.SnapshotTerm = LastIncludedTerm
+	msg.SnapshotIndex = lastIncludedIndex
+	msg.SnapshotTerm = lastIncludedIndex
 	msg.Snapshot = rf.snapshot
 	rf.commitChan <- msg
+
+	return true
 }
 
 //
@@ -786,6 +804,7 @@ func (rf *Raft) leaderCommitNL(followerIndex int) {
 	majorityIndex := sortedIndex[len(sortedIndex)/2]
 	if majorityIndex > rf.commitIndex && getTermForGivenIndexNL(&rf.log, majorityIndex) == rf.currentTerm {
 		rf.commitIndex = majorityIndex
+		rf.persistNL()
 	}
 }
 
@@ -858,6 +877,7 @@ func (rf *Raft) convertToFollowerNL(term int) {
 	if term != rf.currentTerm {
 		rf.voteNL(-1)
 		rf.currentTerm = term
+		rf.persistNL()
 	}
 
 	rf.role = Follower
@@ -876,19 +896,31 @@ func (rf *Raft) resetElectionTimerNL() {
 
 func (rf *Raft) applyLogs() {
 	for !rf.killed() {
+		rf.applySnapshot()
+
 		rf.mu.Lock()
+		lastApplied := rf.lastApplied
 		commitIndex := rf.commitIndex
-		msgs := getCommitLogNL(&rf.log, rf.lastApplied, commitIndex)
+		msgs := getCommitLogNL(&rf.log, lastApplied, commitIndex)
 		rf.mu.Unlock()
 
 		if len(msgs) > 0 {
+			applyAll := true
 			for _, msg := range msgs {
+				if rf.applySnapshot() {
+					applyAll = false
+					break
+				}
+
 				rf.commitChan <- msg
 			}
 
-			rf.mu.Lock()
-			rf.lastApplied = commitIndex
-			rf.mu.Unlock()
+			if applyAll {
+				rf.mu.Lock()
+				rf.lastApplied = commitIndex
+				rf.persistNL()
+				rf.mu.Unlock()
+			}
 		} else {
 			time.Sleep(CheckHeartBeatDuration)
 		}
