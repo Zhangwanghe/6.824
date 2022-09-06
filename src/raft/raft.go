@@ -126,7 +126,7 @@ func (rf *Raft) GetState() (int, bool) {
 // see paper's Figure 2 for a description of what should be persistent.
 //
 
-func (rf *Raft) getStateData() []byte {
+func (rf *Raft) getStateDataNL() []byte {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
@@ -138,12 +138,12 @@ func (rf *Raft) getStateData() []byte {
 
 func (rf *Raft) persistNL() {
 	// Your code here (2C).
-	rf.persister.SaveRaftState(rf.getStateData())
+	rf.persister.SaveRaftState(rf.getStateDataNL())
 }
 
 func (rf *Raft) persistStateAndSnapshotNL(snapshot []byte) {
 	// Your code here (2D).
-	rf.persister.SaveStateAndSnapshot(rf.getStateData(), snapshot)
+	rf.persister.SaveStateAndSnapshot(rf.getStateDataNL(), snapshot)
 }
 
 //
@@ -604,6 +604,8 @@ func (rf *Raft) convertToLeaderNL() {
 
 	go rf.heartBeat()
 
+	go rf.sendSnapShot()
+
 }
 
 func (rf *Raft) heartBeat() {
@@ -653,7 +655,7 @@ func (rf *Raft) synchronize(term int) {
 		rf.mu.Unlock()
 
 		if !isLeader {
-			break
+			return
 		}
 
 		go func(ch chan AppendEntriesReply, term int, index int) {
@@ -756,6 +758,59 @@ func (rf *Raft) leaderCommitNL(followerIndex int) {
 	majorityIndex := sortedIndex[len(sortedIndex)/2]
 	if majorityIndex > rf.commitIndex && getTermForGivenIndexNL(&rf.log, majorityIndex) == rf.currentTerm {
 		rf.commitIndex = majorityIndex
+	}
+}
+
+func (rf *Raft) sendSnapShot() {
+	for !rf.killed() {
+		for index, _ := range rf.peers {
+			if index == rf.me {
+				continue
+			}
+
+			rf.mu.Lock()
+			isLeader := rf.role == Leader
+			term := rf.currentTerm
+			rf.mu.Unlock()
+
+			if !isLeader {
+				return
+			}
+
+			go func(term int, index int) {
+				args := rf.makeInstallSnapShotArgs(term)
+				reply := InstallSnapShotReply{}
+				rf.sendInstallSnapShot(index, &args, &reply)
+				rf.dealWithInstallSnapReply(&reply)
+			}(term, index)
+		}
+
+		time.Sleep(HeartBeatDuration)
+	}
+}
+
+func (rf *Raft) makeInstallSnapShotArgs(term int) InstallSnapShotArgs {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	ret := InstallSnapShotArgs{}
+	ret.Term = term
+	ret.LeaderId = rf.me
+	ret.LastIncludedIndex = getStartIndexNL(&rf.log)
+	ret.LastIncludedTerm = getStartTermNL(&rf.log)
+	ret.data = rf.getStateDataNL()
+
+	return ret
+}
+
+func (rf *Raft) sendInstallSnapShot(server int, args *InstallSnapShotArgs, reply *InstallSnapShotReply) bool {
+	ok := rf.peers[server].Call("Raft.InstallSnapShot", args, reply)
+	return ok
+}
+
+func (rf *Raft) dealWithInstallSnapReply(reply *InstallSnapShotReply) {
+	if reply.Term > rf.currentTerm {
+		rf.convertToFollowerNL(reply.Term)
 	}
 }
 

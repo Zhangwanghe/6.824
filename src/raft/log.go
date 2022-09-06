@@ -154,3 +154,7 @@ func makeSnapshotNL(log *Log, index int) {
 func getStartIndexNL(log *Log) int {
 	return log.StartIndex
 }
+
+func getStartTermNL(log *Log) int {
+	return log.Logs[0].Term
+}
