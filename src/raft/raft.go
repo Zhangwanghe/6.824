@@ -387,12 +387,12 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapSho
 	}
 }
 
-func (rf *Raft) applySnapshot() bool {
+func (rf *Raft) applySnapshot() (bool, ApplyMsg) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
 	if !rf.hasNewSnapshot {
-		return false
+		return false, ApplyMsg{}
 	}
 	rf.hasNewSnapshot = false
 
@@ -408,9 +408,8 @@ func (rf *Raft) applySnapshot() bool {
 	msg.SnapshotIndex = lastIncludedIndex
 	msg.SnapshotTerm = lastIncludedIndex
 	msg.Snapshot = rf.snapshot
-	rf.commitChan <- msg
 
-	return true
+	return true, msg
 }
 
 //
@@ -905,7 +904,10 @@ func (rf *Raft) resetElectionTimerNL() {
 
 func (rf *Raft) applyLogs() {
 	for !rf.killed() {
-		rf.applySnapshot()
+		ok, msg := rf.applySnapshot()
+		if ok {
+			rf.commitChan <- msg
+		}
 
 		rf.mu.Lock()
 		lastApplied := rf.lastApplied
@@ -916,7 +918,9 @@ func (rf *Raft) applyLogs() {
 		if len(msgs) > 0 {
 			applyAll := true
 			for _, msg := range msgs {
-				if rf.applySnapshot() {
+				ok, snapshotMsg := rf.applySnapshot()
+				if ok {
+					rf.commitChan <- snapshotMsg
 					applyAll = false
 					break
 				}
