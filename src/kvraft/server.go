@@ -1,12 +1,13 @@
 package kvraft
 
 import (
-	"6.824/labgob"
-	"6.824/labrpc"
-	"6.824/raft"
 	"log"
 	"sync"
 	"sync/atomic"
+
+	"6.824/labgob"
+	"6.824/labrpc"
+	"6.824/raft"
 )
 
 const Debug = false
@@ -18,11 +19,14 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	OpType       string
+	Key          string
+	Value        string
+	SerialNumber int
 }
 
 type KVServer struct {
@@ -35,15 +39,70 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	keyValues map[string]string
 }
-
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	op := Op{"Get", args.Key, "", args.SerialNumber}
+	if !kv.startOp(op) {
+		reply.Err = "wrong leader"
+		return
+	}
+
+	reply.Value = kv.GetVal(args.Key)
+}
+
+func (kv *KVServer) GetVal(key string) string {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	val, ok := kv.keyValues[key]
+	if !ok {
+		return ""
+	}
+
+	return val
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	op := Op{args.Op, args.Key, args.Value, args.SerialNumber}
+	if !kv.startOp(op) {
+		// todo whether to return leaderId if possible
+		reply.Err = "wrong leader"
+		return
+	}
+
+	if args.Op == "Put" {
+		kv.PutVal(args.Key, args.Value)
+	} else {
+		kv.AppendVal(args.Key, args.Value)
+	}
+}
+
+func (kv *KVServer) startOp(op Op) bool {
+	return true
+}
+
+func (kv *KVServer) PutVal(key string, val string) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	kv.keyValues[key] = val
+}
+
+func (kv *KVServer) AppendVal(key string, val string) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	_, ok := kv.keyValues[key]
+	if !ok {
+		kv.PutVal(key, val)
+		return
+	}
+
+	kv.keyValues[key] += val
 }
 
 //
@@ -96,6 +155,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.keyValues = make(map[string]string)
 
 	return kv
 }
