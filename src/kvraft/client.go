@@ -43,9 +43,9 @@ func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	for {
 		args := GetArgs{key, 0}
-		reply := GetReply{}
 		for _, server := range ck.servers {
-			ok := server.Call("KVServer.Get", args, reply)
+			reply := GetReply{}
+			ok := server.Call("KVServer.Get", &args, &reply)
 			if ok && reply.Err == "" {
 				return reply.Value
 			}
@@ -67,9 +67,9 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 	for {
 		args := PutAppendArgs{key, value, op, 0}
-		reply := PutAppendReply{}
 		for _, server := range ck.servers {
-			ok := server.Call("KVServer.PutAppend", args, reply)
+			reply := PutAppendReply{}
+			ok := server.Call("KVServer.PutAppend", &args, &reply)
 			if ok && reply.Err == "" {
 				return
 			}
