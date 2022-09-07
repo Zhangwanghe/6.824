@@ -4,6 +4,7 @@ import (
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"6.824/labgob"
 	"6.824/labrpc"
@@ -39,7 +40,8 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	keyValues map[string]string
+	keyValues   map[string]string
+	commitIndex int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -82,7 +84,30 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 }
 
 func (kv *KVServer) startOp(op Op) bool {
-	return true
+	// timer := time.NewTimer(2 * time.Second)
+	// defer timer.Stop()
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		return false
+	}
+
+	tStart := time.Now()
+	for time.Since(tStart).Seconds() < 2 {
+		if kv.checkIndex(index) {
+			return true
+		}
+
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	return false
+}
+
+func (kv *KVServer) checkIndex(index int) bool {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	return kv.commitIndex >= index
 }
 
 func (kv *KVServer) PutVal(key string, val string) {
@@ -103,6 +128,32 @@ func (kv *KVServer) AppendVal(key string, val string) {
 	}
 
 	kv.keyValues[key] += val
+}
+
+func (kv *KVServer) readFromApplyCh() {
+	for !kv.killed() {
+		for msg := range kv.applyCh {
+			if msg.CommandValid {
+				kv.dealWithCommand(msg.CommandIndex, msg.Command)
+			} else if msg.SnapshotValid {
+				kv.dealWithSnapShot()
+			} else {
+				// todo log leaderId
+			}
+		}
+	}
+}
+
+func (kv *KVServer) dealWithCommand(commandIndex int, command interface{}) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	kv.commitIndex = commandIndex
+	// todo record newest serial number
+}
+
+func (kv *KVServer) dealWithSnapShot() {
+
 }
 
 //
@@ -156,6 +207,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	kv.keyValues = make(map[string]string)
+
+	go kv.readFromApplyCh()
 
 	return kv
 }
