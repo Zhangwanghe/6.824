@@ -210,6 +210,12 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// todo will index > commitIndex ?
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+
+	if index <= getStartIndexNL(&rf.log) {
+		// make sure log is moved forward
+		return
+	}
+
 	makeSnapshotNL(&rf.log, index)
 	rf.snapshot = snapshot
 	rf.persistStateAndSnapshotNL()
@@ -868,6 +874,9 @@ func (rf *Raft) sendInstallSnapShot(server int, args *InstallSnapShotArgs, reply
 }
 
 func (rf *Raft) dealWithInstallSnapReply(reply *InstallSnapShotReply) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
 	if reply.Term > rf.currentTerm {
 		rf.convertToFollowerNL(reply.Term)
 	}
