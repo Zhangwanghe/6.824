@@ -40,8 +40,9 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	keyValues   map[string]string
-	commitIndex int
+	keyValues    map[string]string
+	appliedlogs  map[int]interface{}
+	requiredlogs map[int]int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -75,12 +76,6 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		reply.Err = "wrong leader"
 		return
 	}
-
-	if args.Op == "Put" {
-		kv.PutVal(args.Key, args.Value)
-	} else {
-		kv.AppendVal(args.Key, args.Value)
-	}
 }
 
 func (kv *KVServer) startOp(op Op) bool {
@@ -91,10 +86,13 @@ func (kv *KVServer) startOp(op Op) bool {
 		return false
 	}
 
-	tStart := time.Now()
-	for time.Since(tStart).Seconds() < 2 {
-		if kv.checkIndex(index) {
+	for {
+		if kv.checkIndex(index, op) {
 			return true
+		}
+
+		if !kv.isLeader() {
+			break
 		}
 
 		time.Sleep(2 * time.Millisecond)
@@ -103,31 +101,23 @@ func (kv *KVServer) startOp(op Op) bool {
 	return false
 }
 
-func (kv *KVServer) checkIndex(index int) bool {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
-	return kv.commitIndex >= index
+func (kv *KVServer) isLeader() bool {
+	_, isLeader := kv.rf.GetState()
+	return isLeader
 }
 
-func (kv *KVServer) PutVal(key string, val string) {
+func (kv *KVServer) checkIndex(index int, command interface{}) bool {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	kv.keyValues[key] = val
-}
+	appliedCommand, ok := kv.appliedlogs[index]
 
-func (kv *KVServer) AppendVal(key string, val string) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
-	_, ok := kv.keyValues[key]
-	if !ok {
-		kv.PutVal(key, val)
-		return
+	if ok {
+		delete(kv.appliedlogs, index)
+		delete(kv.requiredlogs, index)
 	}
 
-	kv.keyValues[key] += val
+	return ok && appliedCommand == command
 }
 
 func (kv *KVServer) readFromApplyCh() {
@@ -148,8 +138,41 @@ func (kv *KVServer) dealWithCommand(commandIndex int, command interface{}) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	kv.commitIndex = commandIndex
 	// todo record newest serial number
+	_, ok := kv.requiredlogs[commandIndex]
+	if ok {
+		kv.appliedlogs[commandIndex] = command
+	}
+
+	// persist putandappend result
+	op, ok := command.(Op)
+	if ok {
+		if op.OpType == "Put" {
+			kv.PutVal(op.Key, op.Value)
+		} else if op.OpType == "Append" {
+			kv.AppendVal(op.Key, op.Value)
+		}
+	}
+}
+
+func (kv *KVServer) PutVal(key string, val string) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	kv.keyValues[key] = val
+}
+
+func (kv *KVServer) AppendVal(key string, val string) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	_, ok := kv.keyValues[key]
+	if !ok {
+		kv.PutVal(key, val)
+		return
+	}
+
+	kv.keyValues[key] += val
 }
 
 func (kv *KVServer) dealWithSnapShot() {
@@ -207,6 +230,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 
 	// You may need initialization code here.
 	kv.keyValues = make(map[string]string)
+	kv.appliedlogs = make(map[int]interface{})
+	kv.requiredlogs = make(map[int]int)
 
 	go kv.readFromApplyCh()
 
