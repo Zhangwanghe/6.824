@@ -10,6 +10,7 @@ import (
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
+	leaderId int
 }
 
 func nrand() int64 {
@@ -22,6 +23,7 @@ func nrand() int64 {
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.leaderId = -1
 	// You'll have to add code here.
 	return ck
 }
@@ -43,10 +45,20 @@ func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
 	for {
 		args := GetArgs{key, 0}
-		for _, server := range ck.servers {
+		// todo add lock for this leaderId?
+		if ck.leaderId != -1 {
+			reply := GetReply{}
+			ok := ck.servers[ck.leaderId].Call("KVServer.Get", &args, &reply)
+			if ok && reply.Err == "" {
+				return reply.Value
+			}
+		}
+
+		for index, server := range ck.servers {
 			reply := GetReply{}
 			ok := server.Call("KVServer.Get", &args, &reply)
 			if ok && reply.Err == "" {
+				ck.leaderId = index
 				return reply.Value
 			}
 		}
