@@ -3,6 +3,7 @@ package kvraft
 import (
 	"crypto/rand"
 	"math/big"
+	"time"
 
 	"6.824/labrpc"
 )
@@ -28,6 +29,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.servers = servers
 	ck.leaderId = -1
 	ck.clientId = nrand()
+	ck.serialNumber = 1
 	return ck
 }
 
@@ -44,7 +46,6 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 // arguments. and reply must be passed as a pointer.
 //
 func (ck *Clerk) Get(key string) string {
-
 	// You will have to modify this function.
 	args := GetArgs{key, ck.clientId, ck.serialNumber}
 	ck.serialNumber++
@@ -67,6 +68,8 @@ func (ck *Clerk) Get(key string) string {
 				return reply.Value
 			}
 		}
+
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -103,6 +106,8 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				return
 			}
 		}
+
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

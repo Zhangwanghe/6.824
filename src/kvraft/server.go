@@ -1,6 +1,7 @@
 package kvraft
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,10 @@ const Debug = false
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug {
+		time := time.Now()
+		timeFormat := "2006-01-02 15:04:05.000"
+		prefix := fmt.Sprintf("%s ", time.Format(timeFormat))
+		format = prefix + format
 		log.Printf(format, a...)
 	}
 	return
@@ -55,6 +60,11 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
+	if !kv.canExecute(args.Client, args.SerialNumber) {
+		reply.Err = "wrong order"
+		return
+	}
+
 	op := Op{"Get", args.Key, "", args.Client, args.SerialNumber}
 	if !kv.startOp(op) {
 		reply.Err = "wrong leader"
@@ -83,6 +93,11 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
+	if !kv.canExecute(args.Client, args.SerialNumber) {
+		reply.Err = "wrong order"
+		return
+	}
+
 	op := Op{args.Op, args.Key, args.Value, args.Client, args.SerialNumber}
 	if !kv.startOp(op) {
 		// todo whether to return leaderId if possible
@@ -104,6 +119,13 @@ func (kv *KVServer) hasExecuted(client int64, serialNumber int, key string) (boo
 	}
 
 	return executed, val
+}
+
+func (kv *KVServer) canExecute(client int64, serialNumber int) bool {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	return kv.clientSerialNumber[client] == serialNumber-1
 }
 
 func (kv *KVServer) startOp(op Op) bool {
