@@ -86,6 +86,8 @@ func (kv *KVServer) startOp(op Op) bool {
 		return false
 	}
 
+	kv.addWaitForIndex(index)
+
 	for {
 		if kv.checkIndex(index, op) {
 			return true
@@ -101,6 +103,13 @@ func (kv *KVServer) startOp(op Op) bool {
 	return false
 }
 
+func (kv *KVServer) addWaitForIndex(index int) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	kv.requiredlogs[index] = 1
+}
+
 func (kv *KVServer) isLeader() bool {
 	_, isLeader := kv.rf.GetState()
 	return isLeader
@@ -111,7 +120,6 @@ func (kv *KVServer) checkIndex(index int, command interface{}) bool {
 	defer kv.mu.Unlock()
 
 	appliedCommand, ok := kv.appliedlogs[index]
-
 	if ok {
 		delete(kv.appliedlogs, index)
 		delete(kv.requiredlogs, index)
@@ -148,27 +156,21 @@ func (kv *KVServer) dealWithCommand(commandIndex int, command interface{}) {
 	op, ok := command.(Op)
 	if ok {
 		if op.OpType == "Put" {
-			kv.PutVal(op.Key, op.Value)
+			kv.PutValNL(op.Key, op.Value)
 		} else if op.OpType == "Append" {
-			kv.AppendVal(op.Key, op.Value)
+			kv.AppendValNL(op.Key, op.Value)
 		}
 	}
 }
 
-func (kv *KVServer) PutVal(key string, val string) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
+func (kv *KVServer) PutValNL(key string, val string) {
 	kv.keyValues[key] = val
 }
 
-func (kv *KVServer) AppendVal(key string, val string) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
+func (kv *KVServer) AppendValNL(key string, val string) {
 	_, ok := kv.keyValues[key]
 	if !ok {
-		kv.PutVal(key, val)
+		kv.PutValNL(key, val)
 		return
 	}
 
