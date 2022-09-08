@@ -27,6 +27,7 @@ type Op struct {
 	OpType       string
 	Key          string
 	Value        string
+	Client       int64
 	SerialNumber int
 }
 
@@ -40,14 +41,21 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	keyValues    map[string]string
-	appliedlogs  map[int]interface{}
-	requiredlogs map[int]int
+	keyValues          map[string]string
+	appliedlogs        map[int]interface{}
+	requiredlogs       map[int]int
+	clientSerialNumber map[int64]int
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
-	op := Op{"Get", args.Key, "", args.SerialNumber}
+	ok, val := kv.hasExecuted(args.Client, args.SerialNumber, args.Key)
+	if ok {
+		reply.Value = val
+		return
+	}
+
+	op := Op{"Get", args.Key, "", args.Client, args.SerialNumber}
 	if !kv.startOp(op) {
 		reply.Err = "wrong leader"
 		return
@@ -70,12 +78,32 @@ func (kv *KVServer) GetVal(key string) string {
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	op := Op{args.Op, args.Key, args.Value, args.SerialNumber}
+	ok, _ := kv.hasExecuted(args.Client, args.SerialNumber, args.Key)
+	if ok {
+		return
+	}
+
+	op := Op{args.Op, args.Key, args.Value, args.Client, args.SerialNumber}
 	if !kv.startOp(op) {
 		// todo whether to return leaderId if possible
 		reply.Err = "wrong leader"
 		return
 	}
+
+}
+
+func (kv *KVServer) hasExecuted(client int64, serialNumber int, key string) (bool, string) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	executed := false
+	var val string
+	if kv.clientSerialNumber[client] >= serialNumber {
+		executed = true
+		val = kv.keyValues[key]
+	}
+
+	return executed, val
 }
 
 func (kv *KVServer) startOp(op Op) bool {
@@ -147,6 +175,7 @@ func (kv *KVServer) dealWithCommand(commandIndex int, command interface{}) {
 	defer kv.mu.Unlock()
 
 	// todo record newest serial number
+
 	_, ok := kv.requiredlogs[commandIndex]
 	if ok {
 		kv.appliedlogs[commandIndex] = command
@@ -155,11 +184,18 @@ func (kv *KVServer) dealWithCommand(commandIndex int, command interface{}) {
 	// persist putandappend result
 	op, ok := command.(Op)
 	if ok {
+		serialNumber, ok := kv.clientSerialNumber[op.Client]
+		if ok && serialNumber >= op.SerialNumber {
+			return
+		}
+
 		if op.OpType == "Put" {
 			kv.PutValNL(op.Key, op.Value)
 		} else if op.OpType == "Append" {
 			kv.AppendValNL(op.Key, op.Value)
 		}
+
+		kv.clientSerialNumber[op.Client] = op.SerialNumber
 	}
 }
 
@@ -234,6 +270,7 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.keyValues = make(map[string]string)
 	kv.appliedlogs = make(map[int]interface{})
 	kv.requiredlogs = make(map[int]int)
+	kv.clientSerialNumber = make(map[(int64)]int)
 
 	go kv.readFromApplyCh()
 

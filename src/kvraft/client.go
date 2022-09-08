@@ -10,7 +10,9 @@ import (
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
-	leaderId int
+	leaderId     int
+	serialNumber int
+	clientId     int64
 }
 
 func nrand() int64 {
@@ -22,9 +24,10 @@ func nrand() int64 {
 
 func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck := new(Clerk)
+	// You'll have to add code here.
 	ck.servers = servers
 	ck.leaderId = -1
-	// You'll have to add code here.
+	ck.clientId = nrand()
 	return ck
 }
 
@@ -43,8 +46,10 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 func (ck *Clerk) Get(key string) string {
 
 	// You will have to modify this function.
+	args := GetArgs{key, ck.clientId, ck.serialNumber}
+	ck.serialNumber++
+
 	for {
-		args := GetArgs{key, 0}
 		// todo add lock for this leaderId?
 		if ck.leaderId != -1 {
 			reply := GetReply{}
@@ -77,12 +82,24 @@ func (ck *Clerk) Get(key string) string {
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
+
+	args := PutAppendArgs{key, value, op, ck.clientId, ck.serialNumber}
+	ck.serialNumber++
+
 	for {
-		args := PutAppendArgs{key, value, op, 0}
-		for _, server := range ck.servers {
+		if ck.leaderId != -1 {
+			reply := PutAppendReply{}
+			ok := ck.servers[ck.leaderId].Call("KVServer.PutAppend", &args, &reply)
+			if ok && reply.Err == "" {
+				return
+			}
+		}
+
+		for index, server := range ck.servers {
 			reply := PutAppendReply{}
 			ok := server.Call("KVServer.PutAppend", &args, &reply)
 			if ok && reply.Err == "" {
+				ck.leaderId = index
 				return
 			}
 		}
