@@ -50,6 +50,7 @@ type KVServer struct {
 	appliedlogs        map[int]interface{}
 	requiredlogs       map[int]int
 	clientSerialNumber map[int64]int
+	checkedLeader      bool
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
@@ -239,6 +240,19 @@ func (kv *KVServer) dealWithSnapShot() {
 
 }
 
+func (kv *KVServer) checkLeader() {
+	for !kv.killed() {
+		kv.mu.Lock()
+		if kv.isLeader() && !kv.checkedLeader {
+			kv.rf.Start(Op{})
+		}
+		kv.checkedLeader = kv.isLeader()
+		kv.mu.Unlock()
+
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 //
 // the tester calls Kill() when a KVServer instance won't
 // be needed again. for your convenience, we supply
@@ -295,6 +309,8 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.clientSerialNumber = make(map[(int64)]int)
 
 	go kv.readFromApplyCh()
+
+	go kv.checkLeader()
 
 	return kv
 }
