@@ -67,7 +67,7 @@ func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	}
 
 	op := Op{"Get", args.Key, "", args.Client, args.SerialNumber}
-	if !kv.startOp(op) {
+	if !kv.startAndWaitForOp(op) {
 		reply.Err = "wrong leader"
 		return
 	}
@@ -100,7 +100,7 @@ func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 
 	op := Op{args.Op, args.Key, args.Value, args.Client, args.SerialNumber}
-	if !kv.startOp(op) {
+	if !kv.startAndWaitForOp(op) {
 		// todo whether to return leaderId if possible
 		reply.Err = "wrong leader"
 		return
@@ -129,15 +129,11 @@ func (kv *KVServer) canExecute(client int64, serialNumber int) bool {
 	return kv.clientSerialNumber[client] == serialNumber-1
 }
 
-func (kv *KVServer) startOp(op Op) bool {
-	// timer := time.NewTimer(2 * time.Second)
-	// defer timer.Stop()
-	index, _, isLeader := kv.rf.Start(op)
-	if !isLeader {
+func (kv *KVServer) startAndWaitForOp(op Op) bool {
+	ok, index := kv.startAndAddWait(op)
+	if !ok {
 		return false
 	}
-
-	kv.addWaitForIndex(index)
 
 	for {
 		if kv.checkIndex(index, op) {
@@ -154,11 +150,19 @@ func (kv *KVServer) startOp(op Op) bool {
 	return false
 }
 
-func (kv *KVServer) addWaitForIndex(index int) {
+func (kv *KVServer) startAndAddWait(op Op) (bool, int) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	// here we make start and set required logs atomic
+	// in case the command is commited too fast after we start and before we add watch to it
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		return false, index
+	}
+
 	kv.requiredlogs[index] = 1
+	return true, index
 }
 
 func (kv *KVServer) isLeader() bool {
@@ -176,6 +180,8 @@ func (kv *KVServer) checkIndex(index int, command interface{}) bool {
 		delete(kv.requiredlogs, index)
 	}
 
+	// if we recieve a different command at this index, we will find correspond
+	// rf server is no longer a leader and hence return false in startOp
 	return ok && appliedCommand == command
 }
 
