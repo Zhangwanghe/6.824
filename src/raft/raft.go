@@ -263,7 +263,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.convertToFollowerNL(args.Term, false)
 	}
 
-	if !rf.isLogUpToDateNL(args.LastLogIndex, args.LastLogTerm) {
+	if rf.isLogUpToDateNL(args.LastLogIndex, args.LastLogTerm) {
 		return
 	}
 
