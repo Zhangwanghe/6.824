@@ -223,6 +223,15 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	rf.persistStateAndSnapshotNL()
 }
 
+// to recover from state machine, a server may request both snapshot and appliedLogs
+func (rf *Raft) GetAppliedLogs() (int, []Entry) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	_, _, entries := getPrevLogAndNewEntriesNL(&rf.log, rf.lastApplied)
+	return getStartIndexNL(&rf.log) + 1, entries
+}
+
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
