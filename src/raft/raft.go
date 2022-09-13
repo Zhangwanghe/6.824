@@ -135,7 +135,9 @@ func (rf *Raft) getStateDataNL() []byte {
 	e.Encode(rf.log)
 	e.Encode(rf.lastApplied)
 	e.Encode(rf.commitIndex)
+	e.Encode(rf.hasNewSnapshot)
 	data := w.Bytes()
+	MyDebug(dSnap, rf.me, "getStateDataNL rf.lastApplied = %+v rf.log = %+v", rf.lastApplied, rf.log)
 	return data
 }
 
@@ -165,11 +167,13 @@ func (rf *Raft) readPersist(data []byte) {
 	var log Log
 	var lastApplied int
 	var commitIndex int
+	var hasNewSnapshot bool
 	if d.Decode(&currentTerm) != nil ||
 		d.Decode(&votedFor) != nil ||
 		d.Decode(&log) != nil ||
 		d.Decode(&lastApplied) != nil ||
-		d.Decode(&commitIndex) != nil {
+		d.Decode(&commitIndex) != nil ||
+		d.Decode(&hasNewSnapshot) != nil {
 
 		// todo should we trigger any error here
 		return
@@ -177,7 +181,8 @@ func (rf *Raft) readPersist(data []byte) {
 		rf.currentTerm = currentTerm
 		rf.votedFor = votedFor
 		rf.log = log
-		rf.lastApplied = Min(lastApplied, getStartIndexNL(&rf.log))
+		rf.lastApplied = getStartIndexNL(&rf.log)
+		rf.hasNewSnapshot = hasNewSnapshot
 		MyDebug(dSnap, rf.me, "read persist rf.lastApplied %d", rf.lastApplied)
 		rf.commitIndex = commitIndex
 	}
@@ -264,7 +269,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	reply.Term = rf.currentTerm
 
-	MyDebug(dLog, rf.me, "RequestVote args are %v address is", args)
+	MyDebug(dLog, rf.me, "RequestVote args are %+v address is", args)
 	if args.Term < reply.Term {
 		reply.VoteGranted = false
 		return
@@ -283,7 +288,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		rf.voteNL(args.CandidateId)
 	}
 
-	MyDebug(dLog, rf.me, "RequestVote reply are %v address is", reply)
+	MyDebug(dLog, rf.me, "RequestVote reply are %+v address is", reply)
 }
 
 func (rf *Raft) isLogUpToDateNL(logIndex int, logTerm int) bool {
@@ -327,7 +332,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	reply.Term = rf.currentTerm
 	reply.FollowerIndex = rf.me
 
-	MyDebug(dLeader, rf.me, "AppendEntries args are : %v", args)
+	MyDebug(dLeader, rf.me, "AppendEntries args are : %+v", args)
 	if args.Term < reply.Term {
 		reply.Success = false
 		return
@@ -336,16 +341,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.convertToFollowerNL(args.Term, true)
 
 	if !hasPrevLogNL(&rf.log, args.PrevLogIndex, args.PrevLogTerm) {
-		MyDebug(dLog, rf.me, "!hasPrevLogNL args are : %v %d", args, len(rf.log.Logs))
+		MyDebug(dLog, rf.me, "!hasPrevLogNL args are : %+v %d", args, len(rf.log.Logs))
 		reply.Success = false
 		reply.ConflictTerm, reply.FirstLogIndexForConflictTerm = getLogInfoBeforeConflictingNL(&rf.log, args.PrevLogIndex)
-		MyDebug(dLog, rf.me, "!hasPrevLogNL replies are: %v", reply)
+		MyDebug(dLog, rf.me, "!hasPrevLogNL replies are: %+v", reply)
 		return
 	}
 
 	appendAndRemoveConflictinLogFromIndexNL(&rf.log, args.PrevLogIndex, args.Entries)
 	if len(args.Entries) > 0 {
-		MyDebug(dTrace, rf.me, "rf.log is %v", rf.log.Logs)
+		MyDebug(dTrace, rf.me, "rf.log is %+v", rf.log)
 	}
 
 	reply.Success = true
@@ -359,7 +364,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	rf.persistNL()
-	MyDebug(dLeader, rf.me, "AppendEntries replies are: %v", reply)
+	MyDebug(dLeader, rf.me, "AppendEntries replies are: %+v", reply)
 }
 
 func Min(x int, y int) int {
@@ -393,7 +398,7 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapSho
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	MyDebug(dSnap, rf.me, "InstallSnapShot args are : %v", args)
+	MyDebug(dSnap, rf.me, "InstallSnapShot args are : %+v", args)
 	reply.Term = rf.currentTerm
 
 	if args.Term > rf.currentTerm {
@@ -420,7 +425,7 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapSho
 	rf.log.StartIndex = args.LastIncludedIndex
 	rf.log.Logs[0].Term = args.LastIncludedTerm
 
-	MyDebug(dSnap, rf.me, "InstallSnapShot reply are : %v", reply)
+	MyDebug(dSnap, rf.me, "InstallSnapShot reply are : %+v", reply)
 }
 
 func (rf *Raft) applySnapshot() (bool, ApplyMsg) {
@@ -486,7 +491,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// This is a possible condition and clients should try again
 	if isLeader {
 		appendLogNL(&rf.log, term, command)
-		MyDebug(dTrace, rf.me, "start a new command %v and rf.log is %v", command, rf.log.Logs)
+		MyDebug(dTrace, rf.me, "start a new command %+v and rf.log is %+v", command, rf.log)
 		rf.persistNL()
 		index = getLastLogIndexNL(&rf.log)
 		rf.nextIndex[rf.me] = index + 1
@@ -583,7 +588,7 @@ func (rf *Raft) election(term int, lastLogTerm int, lastLogIndex int) {
 		go func(index int) {
 			args := RequestVoteArgs{term, rf.me, lastLogTerm, lastLogIndex}
 			reply := RequestVoteReply{}
-			MyDebug(dVote, rf.me, "RequestVote args are : %v", args)
+			MyDebug(dVote, rf.me, "RequestVote args are : %+v", args)
 			// wait for success
 			// todo should we set a timer for timedout requestvote rpc in case too frequent elect
 			for !rf.sendRequestVote(index, &args, &reply) {
@@ -595,7 +600,7 @@ func (rf *Raft) election(term int, lastLogTerm int, lastLogIndex int) {
 					break
 				}
 			}
-			MyDebug(dVote, rf.me, "RequestVote reply are : %v", reply)
+			MyDebug(dVote, rf.me, "RequestVote reply are : %+v", reply)
 
 			ch <- reply
 		}(index)
@@ -755,9 +760,9 @@ func (rf *Raft) synchronize(term int) {
 		args := rf.makeAppendEntriesArgs(term, index)
 		go func(ch chan AppendEntriesReply, term int, index int) {
 			reply := AppendEntriesReply{}
-			MyDebug(dTimer, rf.me, "send to %d with args %v", index, args)
+			MyDebug(dTimer, rf.me, "send to %d with args %+v", index, args)
 			ok := rf.sendAppendEntries(index, &args, &reply)
-			MyDebug(dTimer, rf.me, "recieve from %d reply %v", index, reply)
+			MyDebug(dTimer, rf.me, "recieve from %d reply %+v", index, reply)
 			// set followerIndex to -1
 			if !ok {
 				reply.FollowerIndex = -1
@@ -854,7 +859,7 @@ func (rf *Raft) leaderCommitNL(followerIndex int) {
 
 	majorityIndex := sortedIndex[len(sortedIndex)/2]
 	if majorityIndex > rf.commitIndex && getTermForGivenIndexNL(&rf.log, majorityIndex) == rf.currentTerm {
-		MyDebug(dCommit, rf.me, "sortedIndex = %v, leader commit from %d to %d", sortedIndex, rf.commitIndex, sortedIndex[len(sortedIndex)/2])
+		MyDebug(dCommit, rf.me, "sortedIndex = %+v, leader commit from %d to %d", sortedIndex, rf.commitIndex, sortedIndex[len(sortedIndex)/2])
 		rf.commitIndex = majorityIndex
 		rf.persistNL()
 	}
@@ -883,10 +888,10 @@ func (rf *Raft) sendSnapShot() {
 			go func(term int, index int) {
 				args := rf.makeInstallSnapShotArgs(term)
 				reply := InstallSnapShotReply{}
-				MyDebug(dTimer, rf.me, "InstallSnapShot send to %d with args %v", index, args)
+				MyDebug(dTimer, rf.me, "InstallSnapShot send to %d with args %+v", index, args)
 				rf.sendInstallSnapShot(index, &args, &reply)
 				rf.dealWithInstallSnapReply(&reply)
-				MyDebug(dTimer, rf.me, "InstallSnapShot recieve from %d reply %v", index, reply)
+				MyDebug(dTimer, rf.me, "InstallSnapShot recieve from %d reply %+v", index, reply)
 			}(term, index)
 		}
 
@@ -971,7 +976,7 @@ func (rf *Raft) applyLogs() {
 
 		if len(msgs) > 0 {
 			applyAll := true
-			MyDebug(dCommit, rf.me, "real commit %v", msgs)
+			MyDebug(dCommit, rf.me, "real commit %+v", msgs)
 			for _, msg := range msgs {
 				ok, snapshotMsg := rf.applySnapshot()
 				if ok {
