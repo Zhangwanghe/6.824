@@ -133,7 +133,6 @@ func (rf *Raft) getStateDataNL() []byte {
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
 	e.Encode(rf.log)
-	e.Encode(rf.lastApplied)
 	e.Encode(rf.commitIndex)
 	e.Encode(rf.hasNewSnapshot)
 	data := w.Bytes()
@@ -165,13 +164,11 @@ func (rf *Raft) readPersist(data []byte) {
 	var currentTerm int
 	var votedFor int
 	var log Log
-	var lastApplied int
 	var commitIndex int
 	var hasNewSnapshot bool
 	if d.Decode(&currentTerm) != nil ||
 		d.Decode(&votedFor) != nil ||
 		d.Decode(&log) != nil ||
-		d.Decode(&lastApplied) != nil ||
 		d.Decode(&commitIndex) != nil ||
 		d.Decode(&hasNewSnapshot) != nil {
 
@@ -372,6 +369,14 @@ func Min(x int, y int) int {
 		return y
 	} else {
 		return x
+	}
+}
+
+func Max(x int, y int) int {
+	if x > y {
+		return x
+	} else {
+		return y
 	}
 }
 
