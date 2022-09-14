@@ -6,7 +6,7 @@ mkdir outputDir
 SC=0
 for i in $(seq 1 100); do
     output="outputDir/output_${i}.txt"
-    VERBOSE=1 go test -run TestSnapshotRecoverManyClients3B -race  >> ${output}
+    VERBOSE=1 go test -run 3B   -race  >> ${output}
     sleep 2
 
     NT=`cat ${output} | grep FAIL | wc -l`
