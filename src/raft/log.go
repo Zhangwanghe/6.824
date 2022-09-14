@@ -45,7 +45,7 @@ func getLastLogTermNL(log *Log) int {
 func getPrevLogAndNewEntriesNL(log *Log, index int) (int, int, []Entry) {
 	index = getIndexInCurLog(log, index)
 	if index <= 0 {
-		return log.StartIndex, log.Logs[0].Term, make([]Entry, 0)
+		index = 1
 	}
 
 	entries := make([]Entry, len(log.Logs)-index)
@@ -54,11 +54,6 @@ func getPrevLogAndNewEntriesNL(log *Log, index int) (int, int, []Entry) {
 }
 
 func hasPrevLogNL(log *Log, index int, term int) bool {
-	if index == 0 && term == 0 {
-		// heartbeat
-		return true
-	}
-
 	index = getIndexInCurLog(log, index)
 	if index < 0 {
 		return false
@@ -112,8 +107,12 @@ func appendAndRemoveConflictinLogFromIndexNL(log *Log, lastLogIndex int, entries
 }
 
 func getCommitLogNL(log *Log, prevCommit int, newCommit int) []ApplyMsg {
-	prevCommit = getIndexInCurLog(log, prevCommit)
-	newCommit = getIndexInCurLog(log, newCommit)
+	prevCommit = Max(getIndexInCurLog(log, prevCommit), 0)
+	newCommit = Min(getIndexInCurLog(log, newCommit), len(log.Logs)-1)
+
+	if prevCommit >= newCommit {
+		return make([]ApplyMsg, 0)
+	}
 
 	ret := make([]ApplyMsg, newCommit-prevCommit)
 	for i := prevCommit + 1; i <= newCommit; i++ {
