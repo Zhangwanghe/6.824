@@ -145,7 +145,7 @@ func (kv *KVServer) startAndWaitForOp(op Op) bool {
 
 	DPrintf(kv.me, "start op is %+v \n", op)
 
-	for {
+	for !kv.killed() {
 		if kv.checkIndex(index, op) {
 			return true
 		}
@@ -157,6 +157,7 @@ func (kv *KVServer) startAndWaitForOp(op Op) bool {
 
 		time.Sleep(2 * time.Millisecond)
 	}
+
 
 	return false
 }
@@ -215,7 +216,7 @@ func (kv *KVServer) readFromApplyCh() {
 func (kv *KVServer) dealWithCommandNL(commandIndex int, command interface{}) {
 
 	kv.CommitIndex = commandIndex
-	DPrintf(kv.me, "command is %+v \n", command)
+	DPrintf(kv.me, "command is %+v with index = %d\n", command, commandIndex)
 
 	_, ok := kv.Requiredlogs[commandIndex]
 	if ok {
@@ -336,11 +337,6 @@ func (kv *KVServer) restoreFromSnapshot() {
 
 	// todo atomic or double check
 	kv.readSnapShotNL(kv.persister.ReadSnapshot())
-	firstIndex, entries := kv.rf.GetAppliedLogs()
-	for index, entry := range entries {
-		kv.dealWithCommandNL(firstIndex+index, entry.Command)
-	}
-
 	DPrintf(kv.me, "recovered snapshot is %+v", kv.KeyValues)
 }
 
@@ -389,17 +385,16 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.persister = persister
 
 	// You may need initialization code here.
-
-	kv.applyCh = make(chan raft.ApplyMsg)
-	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
-
-	// You may need initialization code here.
 	kv.KeyValues = make(map[string]string)
 	kv.Appliedlogs = make(map[int]interface{})
 	kv.Requiredlogs = make(map[int]int)
 	kv.ClientSerialNumber = make(map[(int64)]int)
 	kv.restoreFromSnapshot()
 
+	kv.applyCh = make(chan raft.ApplyMsg)
+	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
+
+	// You may need initialization code here.
 	go kv.readFromApplyCh()
 
 	go kv.checkLeader()
