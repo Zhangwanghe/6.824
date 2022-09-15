@@ -242,7 +242,6 @@ func (sc *ShardCtrler) readFromApplyCh() {
 }
 
 func (sc *ShardCtrler) dealWithCommandNL(commandIndex int, command interface{}) {
-
 	sc.CommitIndex = commandIndex
 	DPrintf(sc.me, "command is %+v with index = %d\n", command, commandIndex)
 
@@ -260,12 +259,28 @@ func (sc *ShardCtrler) dealWithCommandNL(commandIndex int, command interface{}) 
 			return
 		}
 
-		if op.OpType == "Put" {
-			// todo
+		if op.OpType == "Join" {
+			sc.JoinConfigNL(op.args)
+		} else if op.OpType == "Leave" {
+			sc.LeaveConfigNL(op.args)
+		} else if op.OpType == "Move" {
+			sc.MoveConfigNL(op.args)
 		}
 
 		sc.ClientSerialNumber[op.Client] = op.SerialNumber
 	}
+}
+
+func (sc *ShardCtrler) JoinConfigNL(args interface{}) {
+
+}
+
+func (sc *ShardCtrler) LeaveConfigNL(args interface{}) {
+
+}
+
+func (sc *ShardCtrler) MoveConfigNL(args interface{}) {
+
 }
 
 func (sc *ShardCtrler) checkLeader() {
