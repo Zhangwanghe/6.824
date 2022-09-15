@@ -53,37 +53,71 @@ type Op struct {
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
+	ok := sc.hasExecuted(args.Client, args.SerialNumber)
+	if ok {
+		DPrintf(sc.me, "Join hasExecuted\n")
+		return
+	}
+
+	if !sc.canExecute(args.Client, args.SerialNumber) {
+		DPrintf(sc.me, "Join !canExecute args = %+v\n", args)
+		reply.Err = "wrong order"
+		return
+	}
 }
 
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here.
+	ok := sc.hasExecuted(args.Client, args.SerialNumber)
+	if ok {
+		DPrintf(sc.me, "Leave hasExecuted\n")
+		return
+	}
+
+	if !sc.canExecute(args.Client, args.SerialNumber) {
+		DPrintf(sc.me, "Leave !canExecute args = %+v\n", args)
+		reply.Err = "wrong order"
+		return
+	}
 }
 
 func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 	// Your code here.
+	ok := sc.hasExecuted(args.Client, args.SerialNumber)
+	if ok {
+		DPrintf(sc.me, "Move hasExecuted\n")
+		return
+	}
+
+	if !sc.canExecute(args.Client, args.SerialNumber) {
+		DPrintf(sc.me, "Move !canExecute args = %+v\n", args)
+		reply.Err = "wrong order"
+		return
+	}
 }
 
 func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	// Your code here.
+	ok := sc.hasExecuted(args.Client, args.SerialNumber)
+	if ok {
+		DPrintf(sc.me, "Query hasExecuted\n")
+		// todo
+		// reply.Config = val
+		return
+	}
+
+	if !sc.canExecute(args.Client, args.SerialNumber) {
+		DPrintf(sc.me, "Query !canExecute args = %+v\n", args)
+		reply.Err = "wrong order"
+		return
+	}
 }
 
-func (sc *ShardCtrler) hasExecuted(client int64, serialNumber int, configNumber int) (bool, Config) {
+func (sc *ShardCtrler) hasExecuted(client int64, serialNumber int) bool {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
-	executed := false
-	var config Config
-	if sc.ClientSerialNumber[client] >= serialNumber {
-		executed = true
-		if configNumber == -1 || configNumber >= len(sc.configs) {
-			// we don't deal with Query when none config is added
-			config = sc.configs[len(sc.configs)-1]
-		} else {
-			config = sc.configs[configNumber]
-		}
-	}
-
-	return executed, config
+	return sc.ClientSerialNumber[client] >= serialNumber
 }
 
 func (sc *ShardCtrler) canExecute(client int64, serialNumber int) bool {
