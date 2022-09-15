@@ -126,8 +126,7 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	ok := sc.hasExecuted(args.Client, args.SerialNumber)
 	if ok {
 		DPrintf(sc.me, "Query hasExecuted\n")
-		// todo
-		// reply.Config = val
+		reply.Config = sc.QueryConfig(args.SerialNumber)
 		return
 	}
 
@@ -143,7 +142,20 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 		return
 	}
 
+	reply.Config = sc.QueryConfig(args.SerialNumber)
+
 	DPrintf(sc.me, "successful Query with %+v\n", args)
+}
+
+func (sc *ShardCtrler) QueryConfig(configNumber int) Config {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+
+	if configNumber == -1 || configNumber >= len(sc.configs) {
+		return sc.configs[len(sc.configs)-1]
+	}
+
+	return sc.configs[configNumber]
 }
 
 func (sc *ShardCtrler) hasExecuted(client int64, serialNumber int) bool {
