@@ -49,6 +49,7 @@ type Op struct {
 	OpType       string
 	Client       int64
 	SerialNumber int
+	args         interface{}
 }
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
@@ -61,9 +62,17 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 
 	if !sc.canExecute(args.Client, args.SerialNumber) {
 		DPrintf(sc.me, "Join !canExecute args = %+v\n", args)
-		reply.Err = "wrong order"
+		reply.WrongLeader = true
 		return
 	}
+
+	op := Op{"Join", args.Client, args.SerialNumber, args}
+	if !sc.startAndWaitForOp(op) {
+		reply.WrongLeader = true
+		return
+	}
+
+	DPrintf(sc.me, "successful Join with %+v\n", args)
 }
 
 func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
@@ -76,9 +85,17 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 
 	if !sc.canExecute(args.Client, args.SerialNumber) {
 		DPrintf(sc.me, "Leave !canExecute args = %+v\n", args)
-		reply.Err = "wrong order"
+		reply.WrongLeader = true
 		return
 	}
+
+	op := Op{"Leave", args.Client, args.SerialNumber, args}
+	if !sc.startAndWaitForOp(op) {
+		reply.WrongLeader = true
+		return
+	}
+
+	DPrintf(sc.me, "successful Leave with %+v\n", args)
 }
 
 func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
@@ -91,9 +108,17 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 
 	if !sc.canExecute(args.Client, args.SerialNumber) {
 		DPrintf(sc.me, "Move !canExecute args = %+v\n", args)
-		reply.Err = "wrong order"
+		reply.WrongLeader = true
 		return
 	}
+
+	op := Op{"Move", args.Client, args.SerialNumber, args}
+	if !sc.startAndWaitForOp(op) {
+		reply.WrongLeader = true
+		return
+	}
+
+	DPrintf(sc.me, "successful Move with %+v\n", args)
 }
 
 func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
@@ -108,9 +133,17 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 
 	if !sc.canExecute(args.Client, args.SerialNumber) {
 		DPrintf(sc.me, "Query !canExecute args = %+v\n", args)
-		reply.Err = "wrong order"
+		reply.WrongLeader = true
 		return
 	}
+
+	op := Op{"Query", args.Client, args.SerialNumber, args}
+	if !sc.startAndWaitForOp(op) {
+		reply.WrongLeader = true
+		return
+	}
+
+	DPrintf(sc.me, "successful Query with %+v\n", args)
 }
 
 func (sc *ShardCtrler) hasExecuted(client int64, serialNumber int) bool {
