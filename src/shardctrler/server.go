@@ -260,26 +260,82 @@ func (sc *ShardCtrler) dealWithCommandNL(commandIndex int, command interface{}) 
 		}
 
 		if op.OpType == "Join" {
-			sc.JoinConfigNL(op.args)
+			args, ok := op.args.(JoinArgs)
+			if ok {
+				sc.joinConfigNL(args.Servers)
+			}
 		} else if op.OpType == "Leave" {
-			sc.LeaveConfigNL(op.args)
+			args, ok := op.args.(LeaveArgs)
+			if ok {
+				sc.leaveConfigNL(args.GIDs)
+			}
 		} else if op.OpType == "Move" {
-			sc.MoveConfigNL(op.args)
+			args, ok := op.args.(MoveArgs)
+			if ok {
+				sc.moveConfigNL(args.Shard, args.GID)
+			}
 		}
 
 		sc.ClientSerialNumber[op.Client] = op.SerialNumber
 	}
 }
 
-func (sc *ShardCtrler) JoinConfigNL(args interface{}) {
+func (sc *ShardCtrler) joinConfigNL(servers map[int][]string) {
+	sc.copyConfigNL()
+
+	for key, value := range servers {
+		sc.configs[len(sc.configs)-1].Groups[key] = value
+	}
+
+	newShards := sc.rebalance()
+	for i := 0; i < NShards; i++ {
+		if newShards[i] != sc.configs[len(sc.configs)-1].Shards[i] {
+			sc.moveShardNL(i, newShards[i])
+		}
+	}
+}
+
+func (sc *ShardCtrler) leaveConfigNL(gids []int) {
+	sc.copyConfigNL()
+
+	for index, _ := range gids {
+		delete(sc.configs[len(sc.configs)-1].Groups, index)
+	}
+
+	newShards := sc.rebalance()
+
+	for i := 0; i < NShards; i++ {
+		if newShards[i] != sc.configs[len(sc.configs)-1].Shards[i] {
+			sc.moveShardNL(i, newShards[i])
+		}
+	}
+}
+
+func (sc *ShardCtrler) moveConfigNL(shard int, gid int) {
+	sc.copyConfigNL()
+	sc.moveShardNL(shard, gid)
+}
+
+func (sc *ShardCtrler) copyConfigNL() {
+	config := Config{}
+	config.Num = sc.configs[len(sc.configs)-1].Num + 1
+
+	for key, value := range sc.configs[len(sc.configs)-1].Groups {
+		config.Groups[key] = value
+	}
+
+	for i := 0; i < NShards; i++ {
+		config.Shards[i] = sc.configs[len(sc.configs)-1].Shards[i]
+	}
+
+	sc.configs = append(sc.configs, config)
+}
+
+func (sc *ShardCtrler) moveShardNL(shard int, gid int) {
 
 }
 
-func (sc *ShardCtrler) LeaveConfigNL(args interface{}) {
-
-}
-
-func (sc *ShardCtrler) MoveConfigNL(args interface{}) {
+func (sc *ShardCtrler) rebalance() [NShards]int {
 
 }
 
@@ -336,7 +392,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
 
 	// Your code here.
-	sc.configs = make([]Config, 0)
 	sc.Appliedlogs = make(map[int]interface{})
 	sc.Requiredlogs = make(map[int]int)
 	sc.ClientSerialNumber = make(map[(int64)]int)
