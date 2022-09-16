@@ -42,6 +42,8 @@ type ShardCtrler struct {
 	ClientSerialNumber map[int64]int
 	CommitIndex        int
 	checkedLeader      bool
+
+	groupOrder []int
 }
 
 type Op struct {
@@ -287,12 +289,7 @@ func (sc *ShardCtrler) joinConfigNL(servers map[int][]string) {
 		sc.configs[len(sc.configs)-1].Groups[key] = value
 	}
 
-	newShards := sc.rebalance()
-	for i := 0; i < NShards; i++ {
-		if newShards[i] != sc.configs[len(sc.configs)-1].Shards[i] {
-			sc.moveShardNL(i, newShards[i])
-		}
-	}
+	sc.rebalance()
 }
 
 func (sc *ShardCtrler) leaveConfigNL(gids []int) {
@@ -302,13 +299,7 @@ func (sc *ShardCtrler) leaveConfigNL(gids []int) {
 		delete(sc.configs[len(sc.configs)-1].Groups, index)
 	}
 
-	newShards := sc.rebalance()
-
-	for i := 0; i < NShards; i++ {
-		if newShards[i] != sc.configs[len(sc.configs)-1].Shards[i] {
-			sc.moveShardNL(i, newShards[i])
-		}
-	}
+	sc.rebalance()
 }
 
 func (sc *ShardCtrler) moveConfigNL(shard int, gid int) {
@@ -332,11 +323,52 @@ func (sc *ShardCtrler) copyConfigNL() {
 }
 
 func (sc *ShardCtrler) moveShardNL(shard int, gid int) {
-
+	sc.configs[len(sc.configs)-1].Shards[shard] = gid
 }
 
-func (sc *ShardCtrler) rebalance() [NShards]int {
+func (sc *ShardCtrler) rebalance() {
+	oldGroupIds := getSortedKeysForMap(sc.configs[len(sc.configs)-2].Groups)
+	newGroupIds := getSortedKeysForMap(sc.configs[len(sc.configs)-1].Groups)
 
+	oldShards := sc.getShardNumForGroups(len(oldGroupIds))
+	newShards := sc.getShardNumForGroups(len(newGroupIds))
+
+	oldGroupToShardNumMap := makeMap(oldGroupIds, oldShards)
+	newGroupToShardNumMap := makeMap(newGroupIds, newShards)
+
+	groupShardDiff := diffMap(newGroupToShardNumMap, oldGroupToShardNumMap)
+
+	for _, oldGid := range oldGroupIds {
+		if groupShardDiff[oldGid] < 0 {
+			for _, newGid := range newGroupIds {
+				if groupShardDiff[newGid] > 0 {
+					for i := 0; i < NShards; i++ {
+						if sc.configs[len(sc.configs)-1].Shards[i] == oldGid {
+							sc.moveShardNL(i, newGid)
+						}
+					}
+					groupShardDiff[newGid]--
+					break
+				}
+			}
+			groupShardDiff[oldGid]++
+		}
+	}
+}
+
+func (sc *ShardCtrler) getShardNumForGroups(groupNum int) []int {
+	avg := NShards / groupNum
+	rest := NShards % groupNum
+	ret := make([]int, groupNum)
+	for i := 0; i < groupNum; i++ {
+		ret[i] = avg
+		if rest > 0 {
+			ret[i]++
+			rest--
+		}
+	}
+
+	return ret
 }
 
 func (sc *ShardCtrler) checkLeader() {
