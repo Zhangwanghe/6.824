@@ -1,5 +1,7 @@
 package shardctrler
 
+import "sort"
+
 //
 // Shard controler: assigns shards to replication groups.
 //
@@ -78,4 +80,46 @@ type QueryReply struct {
 	WrongLeader bool
 	Err         Err
 	Config      Config
+}
+
+func getSortedKeysForMap(m map[int][]string) []int {
+	keys := make([]int, 0)
+	for key, _ := range m {
+		keys = append(keys, key)
+	}
+
+	sort.Ints(keys)
+
+	return keys
+}
+
+func makeMap(keys []int, vals []int) map[int]int {
+	ret := make(map[int]int)
+	for index, key := range keys {
+		ret[key] = vals[index]
+	}
+
+	return ret
+}
+
+func diffMap(a map[int]int, b map[int]int) map[int]int {
+	counts := make(map[int]int)
+
+	for k, v := range a {
+		val, ok := b[k]
+		if ok {
+			counts[k] = v - val
+		} else {
+			counts[k] = v
+		}
+	}
+
+	for k, v := range b {
+		_, ok := a[k]
+		if !ok {
+			counts[k] = -v
+		}
+	}
+
+	return counts
 }
