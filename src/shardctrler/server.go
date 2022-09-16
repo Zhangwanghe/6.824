@@ -3,6 +3,7 @@ package shardctrler
 import (
 	"fmt"
 	"log"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -51,7 +52,7 @@ type Op struct {
 	OpType       string
 	Client       int64
 	SerialNumber int
-	args         interface{}
+	Args         interface{}
 }
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
@@ -68,7 +69,7 @@ func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 		return
 	}
 
-	op := Op{"Join", args.Client, args.SerialNumber, args}
+	op := Op{"Join", args.Client, args.SerialNumber, *args}
 	if !sc.startAndWaitForOp(op) {
 		reply.WrongLeader = true
 		return
@@ -91,7 +92,7 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 		return
 	}
 
-	op := Op{"Leave", args.Client, args.SerialNumber, args}
+	op := Op{"Leave", args.Client, args.SerialNumber, *args}
 	if !sc.startAndWaitForOp(op) {
 		reply.WrongLeader = true
 		return
@@ -114,7 +115,7 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 		return
 	}
 
-	op := Op{"Move", args.Client, args.SerialNumber, args}
+	op := Op{"Move", args.Client, args.SerialNumber, *args}
 	if !sc.startAndWaitForOp(op) {
 		reply.WrongLeader = true
 		return
@@ -138,21 +139,20 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 		return
 	}
 
-	op := Op{"Query", args.Client, args.SerialNumber, args}
+	op := Op{"Query", args.Client, args.SerialNumber, *args}
 	if !sc.startAndWaitForOp(op) {
 		reply.WrongLeader = true
 		return
 	}
 
-	reply.Config = sc.QueryConfig(args.SerialNumber)
+	reply.Config = sc.QueryConfig(args.Num)
 
-	DPrintf(sc.me, "successful Query with %+v\n", args)
+	DPrintf(sc.me, "successful Query with %+v and reply is %+v \n", args, reply)
 }
 
 func (sc *ShardCtrler) QueryConfig(configNumber int) Config {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-
 	if configNumber == -1 || configNumber >= len(sc.configs) {
 		return sc.configs[len(sc.configs)-1]
 	}
@@ -230,7 +230,7 @@ func (sc *ShardCtrler) checkIndex(index int, command interface{}) bool {
 
 	// if we recieve a different command at this index, we will find correspond
 	// rf server is no longer a leader and hence return false in startOp
-	return ok && appliedCommand == command
+	return ok && reflect.DeepEqual(appliedCommand, command)
 }
 
 func (sc *ShardCtrler) readFromApplyCh() {
@@ -262,17 +262,17 @@ func (sc *ShardCtrler) dealWithCommandNL(commandIndex int, command interface{}) 
 		}
 
 		if op.OpType == "Join" {
-			args, ok := op.args.(JoinArgs)
+			args, ok := op.Args.(JoinArgs)
 			if ok {
 				sc.joinConfigNL(args.Servers)
 			}
 		} else if op.OpType == "Leave" {
-			args, ok := op.args.(LeaveArgs)
+			args, ok := op.Args.(LeaveArgs)
 			if ok {
 				sc.leaveConfigNL(args.GIDs)
 			}
 		} else if op.OpType == "Move" {
-			args, ok := op.args.(MoveArgs)
+			args, ok := op.Args.(MoveArgs)
 			if ok {
 				sc.moveConfigNL(args.Shard, args.GID)
 			}
@@ -295,8 +295,8 @@ func (sc *ShardCtrler) joinConfigNL(servers map[int][]string) {
 func (sc *ShardCtrler) leaveConfigNL(gids []int) {
 	sc.copyConfigNL()
 
-	for index, _ := range gids {
-		delete(sc.configs[len(sc.configs)-1].Groups, index)
+	for _, gid := range gids {
+		delete(sc.configs[len(sc.configs)-1].Groups, gid)
 	}
 
 	sc.rebalance()
@@ -311,6 +311,7 @@ func (sc *ShardCtrler) copyConfigNL() {
 	config := Config{}
 	config.Num = sc.configs[len(sc.configs)-1].Num + 1
 
+	config.Groups = make(map[int][]string)
 	for key, value := range sc.configs[len(sc.configs)-1].Groups {
 		config.Groups[key] = value
 	}
@@ -336,15 +337,27 @@ func (sc *ShardCtrler) rebalance() {
 	oldGroupToShardNumMap := makeMap(oldGroupIds, oldShards)
 	newGroupToShardNumMap := makeMap(newGroupIds, newShards)
 
+	if len(oldGroupIds) == 0 {
+		j := 0
+		for _, newGid := range newGroupIds {
+			for k := 0; k < newGroupToShardNumMap[newGid]; k++ {
+				sc.moveShardNL(j, newGid)
+				j++
+			}
+		}
+		return
+	}
+
 	groupShardDiff := diffMap(newGroupToShardNumMap, oldGroupToShardNumMap)
 
 	for _, oldGid := range oldGroupIds {
-		if groupShardDiff[oldGid] < 0 {
+		for groupShardDiff[oldGid] < 0 {
 			for _, newGid := range newGroupIds {
-				if groupShardDiff[newGid] > 0 {
+				for groupShardDiff[newGid] > 0 {
 					for i := 0; i < NShards; i++ {
 						if sc.configs[len(sc.configs)-1].Shards[i] == oldGid {
 							sc.moveShardNL(i, newGid)
+							break
 						}
 					}
 					groupShardDiff[newGid]--
@@ -357,6 +370,10 @@ func (sc *ShardCtrler) rebalance() {
 }
 
 func (sc *ShardCtrler) getShardNumForGroups(groupNum int) []int {
+	if groupNum == 0 {
+		return make([]int, 0)
+	}
+
 	avg := NShards / groupNum
 	rest := NShards % groupNum
 	ret := make([]int, groupNum)
@@ -420,6 +437,10 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sc.configs[0].Groups = map[int][]string{}
 
 	labgob.Register(Op{})
+	labgob.Register(JoinArgs{})
+	labgob.Register(LeaveArgs{})
+	labgob.Register(MoveArgs{})
+	labgob.Register(QueryArgs{})
 	sc.applyCh = make(chan raft.ApplyMsg)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
 
