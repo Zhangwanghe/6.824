@@ -1,6 +1,7 @@
 package shardkv
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"sync"
@@ -47,8 +48,8 @@ type ShardKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-	dead int32 // set by Kill()
-
+	dead               int32 // set by Kill()
+	persister          *raft.Persister
 	Appliedlogs        map[int]interface{}
 	Requiredlogs       map[int]int
 	ClientSerialNumber map[int64]int
@@ -203,6 +204,8 @@ func (kv *ShardKV) readFromApplyCh() {
 			kv.mu.Lock()
 			if msg.CommandValid {
 				kv.dealWithCommandNL(msg.CommandIndex, msg.Command)
+			} else if msg.SnapshotValid {
+				kv.dealWithSnapShotNL(msg.Snapshot, msg.SnapshotIndex)
 			}
 
 			kv.mu.Unlock()
@@ -253,6 +256,13 @@ func (kv *ShardKV) AppendValNL(key string, val string) {
 	kv.KeyValues[key] += val
 }
 
+func (kv *ShardKV) dealWithSnapShotNL(snapshot []byte, snapshotIndex int) {
+	DPrintf(kv.me, "receiev snapshot is %+v with index %d\n", snapshot, snapshotIndex)
+
+	kv.readSnapShotNL(snapshot)
+	kv.CommitIndex = snapshotIndex
+}
+
 func (kv *ShardKV) checkLeader() {
 	for !kv.killed() {
 		kv.mu.Lock()
@@ -264,6 +274,70 @@ func (kv *ShardKV) checkLeader() {
 
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func (kv *ShardKV) checkSnapshot() {
+	for !kv.killed() {
+
+		if kv.persister.RaftStateSize() >= kv.maxraftstate*9/10 {
+			kv.makeSnapshot()
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (kv *ShardKV) makeSnapshot() {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	e.Encode(kv.Appliedlogs)
+	e.Encode(kv.Requiredlogs)
+	e.Encode(kv.ClientSerialNumber)
+	e.Encode(kv.CommitIndex)
+	e.Encode(kv.KeyValues)
+	DPrintf(kv.me, "make snapshot from %d", kv.CommitIndex)
+	kv.rf.Snapshot(kv.CommitIndex, w.Bytes())
+}
+
+func (kv *ShardKV) readSnapShotNL(data []byte) {
+	if data == nil || len(data) < 1 { // bootstrap without any state?
+		return
+	}
+
+	r := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(r)
+	var appliedlogs map[int]interface{}
+	var requiredlogs map[int]int
+	var clientSerialNumber map[int64]int
+	var commitIndex int
+	var keyValues map[string]string
+	if d.Decode(&appliedlogs) != nil ||
+		d.Decode(&requiredlogs) != nil ||
+		d.Decode(&clientSerialNumber) != nil ||
+		d.Decode(&commitIndex) != nil ||
+		d.Decode(&keyValues) != nil {
+
+		// todo should we trigger any error here
+		return
+	} else {
+		kv.Appliedlogs = appliedlogs
+		kv.Requiredlogs = requiredlogs
+		kv.ClientSerialNumber = clientSerialNumber
+		kv.CommitIndex = commitIndex
+		kv.KeyValues = keyValues
+	}
+}
+
+func (kv *ShardKV) restoreFromSnapshot() {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	// todo atomic or double check
+	kv.readSnapShotNL(kv.persister.ReadSnapshot())
+	DPrintf(kv.me, "recovered snapshot is %+v", kv.KeyValues)
 }
 
 //
@@ -322,11 +396,14 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.make_end = make_end
 	kv.gid = gid
 	kv.ctrlers = ctrlers
+	kv.persister = persister
 
 	// Your initialization code here.
+	kv.KeyValues = make(map[string]string)
 	kv.Appliedlogs = make(map[int]interface{})
 	kv.Requiredlogs = make(map[int]int)
 	kv.ClientSerialNumber = make(map[(int64)]int)
+	kv.restoreFromSnapshot()
 
 	// Use something like this to talk to the shardctrler:
 	// kv.mck = shardctrler.MakeClerk(kv.ctrlers)
@@ -337,6 +414,10 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	go kv.readFromApplyCh()
 
 	go kv.checkLeader()
+
+	if kv.maxraftstate != -1 {
+		go kv.checkSnapshot()
+	}
 
 	return kv
 }
