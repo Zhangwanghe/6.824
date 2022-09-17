@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -289,7 +290,7 @@ func (sc *ShardCtrler) joinConfigNL(servers map[int][]string) {
 		sc.configs[len(sc.configs)-1].Groups[key] = value
 	}
 
-	sc.rebalance()
+	sc.rebalance(make([]int, 0))
 }
 
 func (sc *ShardCtrler) leaveConfigNL(gids []int) {
@@ -299,7 +300,7 @@ func (sc *ShardCtrler) leaveConfigNL(gids []int) {
 		delete(sc.configs[len(sc.configs)-1].Groups, gid)
 	}
 
-	sc.rebalance()
+	sc.rebalance(gids)
 }
 
 func (sc *ShardCtrler) moveConfigNL(shard int, gid int) {
@@ -327,19 +328,23 @@ func (sc *ShardCtrler) moveShardNL(shard int, gid int) {
 	sc.configs[len(sc.configs)-1].Shards[shard] = gid
 }
 
-func (sc *ShardCtrler) rebalance() {
-	oldGroupIds := getSortedKeysForMap(sc.configs[len(sc.configs)-2].Groups)
-	newGroupIds := getSortedKeysForMap(sc.configs[len(sc.configs)-1].Groups)
+func (sc *ShardCtrler) rebalance(gids []int) {
+	usedGroupId, usedGroupShardNum := sc.getSortedUsedGroupIdAndShardNum()
+	restdGroupId, _ := sc.removeLeaveGroup(usedGroupId, usedGroupShardNum, gids)
+	unusedGroupId := sc.getSortedUnUsedGroupId(restdGroupId)
+	newGroupId := append(restdGroupId, unusedGroupId[:raft.Min(NShards-len(restdGroupId), len(unusedGroupId))]...)
+	if len(newGroupId) == 0 {
+		newGroupId = append(newGroupId, 0)
+	}
+	newGroupShardNum := sc.getShardNumForGroups(len(newGroupId))
 
-	oldShards := sc.getShardNumForGroups(len(oldGroupIds))
-	newShards := sc.getShardNumForGroups(len(newGroupIds))
 
-	oldGroupToShardNumMap := makeMap(oldGroupIds, oldShards)
-	newGroupToShardNumMap := makeMap(newGroupIds, newShards)
+	oldGroupToShardNumMap := makeMap(usedGroupId, usedGroupShardNum)
+	newGroupToShardNumMap := makeMap(newGroupId, newGroupShardNum)
 
-	if len(oldGroupIds) == 0 {
+	if len(usedGroupId) == 0 {
 		j := 0
-		for _, newGid := range newGroupIds {
+		for _, newGid := range newGroupId {
 			for k := 0; k < newGroupToShardNumMap[newGid]; k++ {
 				sc.moveShardNL(j, newGid)
 				j++
@@ -350,23 +355,125 @@ func (sc *ShardCtrler) rebalance() {
 
 	groupShardDiff := diffMap(newGroupToShardNumMap, oldGroupToShardNumMap)
 
-	for _, oldGid := range oldGroupIds {
+	for _, oldGid := range usedGroupId {
 		for groupShardDiff[oldGid] < 0 {
-			for _, newGid := range newGroupIds {
+			for _, newGid := range newGroupId {
 				for groupShardDiff[newGid] > 0 {
 					for i := 0; i < NShards; i++ {
 						if sc.configs[len(sc.configs)-1].Shards[i] == oldGid {
 							sc.moveShardNL(i, newGid)
+							groupShardDiff[newGid]--
+							groupShardDiff[oldGid]++
 							break
 						}
 					}
-					groupShardDiff[newGid]--
+
+					if groupShardDiff[oldGid] == 0 {
+						break
+					}
+				}
+
+				if groupShardDiff[oldGid] == 0 {
 					break
 				}
 			}
-			groupShardDiff[oldGid]++
 		}
 	}
+}
+
+func (sc *ShardCtrler) getSortedUsedGroupIdAndShardNum() ([]int, []int) {
+	groupToShardNum := make(map[int]int)
+	for i := 0; i < NShards; i++ {
+		if sc.configs[len(sc.configs)-1].Shards[i] == 0 {
+			continue
+		}
+
+		groupToShardNum[sc.configs[len(sc.configs)-1].Shards[i]]++
+	}
+
+	usedGroupId := make([]int, 0)
+	usedGroupShardNum := make([]int, 0)
+	for gid, shardNum := range groupToShardNum {
+		usedGroupId = append(usedGroupId, gid)
+		usedGroupShardNum = append(usedGroupShardNum, shardNum)
+	}
+
+	for i := len(usedGroupId) - 1; i >= 1; i-- {
+		for j := 0; j < i; j++ {
+			if usedGroupShardNum[j] < usedGroupShardNum[j+1] {
+				temp := usedGroupShardNum[j]
+				usedGroupShardNum[j] = usedGroupShardNum[j+1]
+				usedGroupShardNum[j+1] = temp
+
+				temp = usedGroupId[j]
+				usedGroupId[j] = usedGroupId[j+1]
+				usedGroupId[j+1] = temp
+			}
+		}
+	}
+
+	return usedGroupId, usedGroupShardNum
+}
+
+func (sc *ShardCtrler) removeLeaveGroup(usedGroupId []int, usedGroupShardNum []int, gids []int) ([]int, []int) {
+	if len(gids) == 0 {
+		return usedGroupId, usedGroupShardNum
+	}
+
+	restCount := len(usedGroupId)
+
+	for i := 0; i < len(usedGroupId); i++ {
+		for j := 0; j < len(gids); j++ {
+			if usedGroupId[i] == gids[j] {
+				restCount--
+				break
+			}
+		}
+	}
+
+	restGroupId := make([]int, restCount)
+	restGroupShardNum := make([]int, restCount)
+
+	index := 0
+	for i := 0; i < len(usedGroupId); i++ {
+		has := false
+
+		for j := 0; j < len(gids); j++ {
+			if usedGroupId[i] == gids[j] {
+				has = true
+				break
+			}
+		}
+
+		if !has {
+			restGroupId[index] = usedGroupId[i]
+			restGroupShardNum[index] = usedGroupShardNum[i]
+			index++
+		}
+	}
+
+	return restGroupId, restGroupShardNum
+}
+
+func (sc *ShardCtrler) getSortedUnUsedGroupId(usedGroupId []int) []int {
+	unUsedGroupId := make([]int, 0)
+	for gid, _ := range sc.configs[len(sc.configs)-1].Groups {
+		flag := false
+
+		for i := 0; i < len(usedGroupId); i++ {
+			if usedGroupId[i] == gid {
+				flag = true
+			}
+		}
+
+		if !flag {
+			unUsedGroupId = append(unUsedGroupId, gid)
+		}
+	}
+
+	sort.Ints(unUsedGroupId)
+
+	return unUsedGroupId
 }
 
 func (sc *ShardCtrler) getShardNumForGroups(groupNum int) []int {
