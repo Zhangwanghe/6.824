@@ -11,5 +11,5 @@ done
 NT=`cat ${output} | grep FAIL | wc -l`
 if [ "$NT" -eq "0" ]
 then
-"Passed All"
+echo "Passed All"
 fi
