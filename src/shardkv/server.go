@@ -1,17 +1,39 @@
 package shardkv
 
+import (
+	"fmt"
+	"log"
+	"sync"
+	"sync/atomic"
+	"time"
 
-import "6.824/labrpc"
-import "6.824/raft"
-import "sync"
-import "6.824/labgob"
+	"6.824/labgob"
+	"6.824/labrpc"
+	"6.824/raft"
+)
 
+const Debug = false
 
+func DPrintf(index int, format string, a ...interface{}) (n int, err error) {
+	if Debug {
+		time := time.Now()
+		timeFormat := "2006-01-02 15:04:05.000"
+		prefix := fmt.Sprintf("%s S%d ", time.Format(timeFormat), index)
+		format = prefix + format
+		log.Printf(format, a...)
+	}
+	return
+}
 
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
+	OpType       string
+	Key          string
+	Value        string
+	Client       int64
+	SerialNumber int
 }
 
 type ShardKV struct {
@@ -25,15 +47,223 @@ type ShardKV struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
-}
+	dead int32 // set by Kill()
 
+	Appliedlogs        map[int]interface{}
+	Requiredlogs       map[int]int
+	ClientSerialNumber map[int64]int
+	CommitIndex        int
+	checkedLeader      bool
+	KeyValues          map[string]string
+}
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	ok, val := kv.hasExecuted(args.Client, args.SerialNumber, args.Key)
+	if ok {
+		DPrintf(kv.me, "Get hasExecuted\n")
+		reply.Value = val
+		return
+	}
+
+	if !kv.canExecute(args.Client, args.SerialNumber) {
+		DPrintf(kv.me, "Get !canExecute args = %+v\n", args)
+		reply.Err = "wrong order"
+		return
+	}
+
+	op := Op{"Get", args.Key, "", args.Client, args.SerialNumber}
+	if !kv.startAndWaitForOp(op) {
+		reply.Err = "wrong leader"
+		return
+	}
+
+	reply.Value = kv.GetVal(args.Key)
+}
+
+func (kv *ShardKV) GetVal(key string) string {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	val, ok := kv.KeyValues[key]
+	if !ok {
+		return ""
+	}
+
+	return val
 }
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	ok, _ := kv.hasExecuted(args.Client, args.SerialNumber, args.Key)
+	if ok {
+		DPrintf(kv.me, "PutAppend hasExecuted\n")
+		return
+	}
+
+	if !kv.canExecute(args.Client, args.SerialNumber) {
+		DPrintf(kv.me, "PutAppend !canExecute args = %+v\n", args)
+		reply.Err = "wrong order"
+		return
+	}
+
+	op := Op{args.Op, args.Key, args.Value, args.Client, args.SerialNumber}
+	if !kv.startAndWaitForOp(op) {
+		// todo whether to return leaderId if possible
+		reply.Err = "wrong leader"
+		return
+	}
+
+	DPrintf(kv.me, "successful putappend with %+v\n", args)
+}
+
+func (kv *ShardKV) hasExecuted(client int64, serialNumber int, key string) (bool, string) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	executed := false
+	var val string
+	if kv.ClientSerialNumber[client] >= serialNumber {
+		executed = true
+		val = kv.KeyValues[key]
+	}
+
+	return executed, val
+}
+
+func (kv *ShardKV) canExecute(client int64, serialNumber int) bool {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	return kv.ClientSerialNumber[client] == serialNumber-1
+}
+
+func (kv *ShardKV) startAndWaitForOp(op Op) bool {
+	ok, index := kv.startAndAddWait(op)
+	if !ok {
+		return false
+	}
+
+	DPrintf(kv.me, "start op is %+v \n", op)
+
+	for !kv.killed() {
+		if kv.checkIndex(index, op) {
+			return true
+		}
+
+		if !kv.isLeader() {
+			DPrintf(kv.me, "not a leader %+v \n", op)
+			break
+		}
+
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	return false
+}
+
+func (kv *ShardKV) startAndAddWait(op Op) (bool, int) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	// here we make start and set required logs atomic
+	// in case the command is commited too fast after we start and before we add watch to it
+	index, _, isLeader := kv.rf.Start(op)
+	if !isLeader {
+		return false, index
+	}
+
+	kv.Requiredlogs[index] = 1
+	return true, index
+}
+
+func (kv *ShardKV) isLeader() bool {
+	_, isLeader := kv.rf.GetState()
+	return isLeader
+}
+
+func (kv *ShardKV) checkIndex(index int, command interface{}) bool {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	appliedCommand, ok := kv.Appliedlogs[index]
+	if ok {
+		delete(kv.Appliedlogs, index)
+		delete(kv.Requiredlogs, index)
+	}
+
+	// if we recieve a different command at this index, we will find correspond
+	// rf server is no longer a leader and hence return false in startOp
+	return ok && appliedCommand == command
+}
+
+func (kv *ShardKV) readFromApplyCh() {
+	for !kv.killed() {
+		for msg := range kv.applyCh {
+			kv.mu.Lock()
+			if msg.CommandValid {
+				kv.dealWithCommandNL(msg.CommandIndex, msg.Command)
+			}
+
+			kv.mu.Unlock()
+		}
+	}
+}
+
+func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
+
+	kv.CommitIndex = commandIndex
+	DPrintf(kv.me, "command is %+v with index = %d\n", command, commandIndex)
+
+	_, ok := kv.Requiredlogs[commandIndex]
+	if ok {
+		kv.Appliedlogs[commandIndex] = command
+	}
+
+	// persist putandappend result
+	op, ok := command.(Op)
+	if ok {
+		serialNumber, ok := kv.ClientSerialNumber[op.Client]
+		if ok && serialNumber >= op.SerialNumber {
+			DPrintf(kv.me, "has dealt %d", op.SerialNumber)
+			return
+		}
+
+		if op.OpType == "Put" {
+			kv.PutValNL(op.Key, op.Value)
+		} else if op.OpType == "Append" {
+			kv.AppendValNL(op.Key, op.Value)
+		}
+
+		kv.ClientSerialNumber[op.Client] = op.SerialNumber
+	}
+}
+
+func (kv *ShardKV) PutValNL(key string, val string) {
+	kv.KeyValues[key] = val
+}
+
+func (kv *ShardKV) AppendValNL(key string, val string) {
+	_, ok := kv.KeyValues[key]
+	if !ok {
+		kv.PutValNL(key, val)
+		return
+	}
+
+	kv.KeyValues[key] += val
+}
+
+func (kv *ShardKV) checkLeader() {
+	for !kv.killed() {
+		kv.mu.Lock()
+		if kv.isLeader() && !kv.checkedLeader {
+			kv.rf.Start(Op{})
+		}
+		kv.checkedLeader = kv.isLeader()
+		kv.mu.Unlock()
+
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 //
@@ -45,8 +275,13 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 func (kv *ShardKV) Kill() {
 	kv.rf.Kill()
 	// Your code here, if desired.
+	atomic.StoreInt32(&kv.dead, 1)
 }
 
+func (kv *ShardKV) killed() bool {
+	z := atomic.LoadInt32(&kv.dead)
+	return z == 1
+}
 
 //
 // servers[] contains the ports of the servers in this group.
@@ -89,6 +324,9 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.ctrlers = ctrlers
 
 	// Your initialization code here.
+	kv.Appliedlogs = make(map[int]interface{})
+	kv.Requiredlogs = make(map[int]int)
+	kv.ClientSerialNumber = make(map[(int64)]int)
 
 	// Use something like this to talk to the shardctrler:
 	// kv.mck = shardctrler.MakeClerk(kv.ctrlers)
@@ -96,6 +334,9 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
+	go kv.readFromApplyCh()
+
+	go kv.checkLeader()
 
 	return kv
 }
