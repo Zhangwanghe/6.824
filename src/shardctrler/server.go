@@ -400,7 +400,8 @@ func (sc *ShardCtrler) getSortedUsedGroupIdAndShardNum() ([]int, []int) {
 
 	for i := len(usedGroupId) - 1; i >= 1; i-- {
 		for j := 0; j < i; j++ {
-			if usedGroupShardNum[j] < usedGroupShardNum[j+1] {
+			if usedGroupShardNum[j] < usedGroupShardNum[j+1] ||
+				(usedGroupShardNum[j] == usedGroupShardNum[j+1] && usedGroupId[j] < usedGroupId[j+1]) {
 				temp := usedGroupShardNum[j]
 				usedGroupShardNum[j] = usedGroupShardNum[j+1]
 				usedGroupShardNum[j+1] = temp
