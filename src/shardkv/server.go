@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,6 +37,7 @@ type Op struct {
 	Value        string
 	Client       int64
 	SerialNumber int
+	Config       shardctrler.Config
 }
 
 type ShardKV struct {
@@ -83,7 +85,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
-	op := Op{"Get", args.Key, "", args.Client, args.SerialNumber}
+	op := Op{"Get", args.Key, "", args.Client, args.SerialNumber, shardctrler.Config{}}
 	err := kv.startAndWaitForOp(op)
 	if err != OK {
 		reply.Err = err
@@ -130,7 +132,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
-	op := Op{args.Op, args.Key, args.Value, args.Client, args.SerialNumber}
+	op := Op{args.Op, args.Key, args.Value, args.Client, args.SerialNumber, shardctrler.Config{}}
 	err := kv.startAndWaitForOp(op)
 	if err != OK {
 		reply.Err = err
@@ -198,7 +200,7 @@ func (kv *ShardKV) startAndWaitForOp(op Op) Err {
 		}
 
 		if !kv.keyInGroup(op.Key) {
-			DPrintf(kv.me, "reconfig %+v \n", op)
+			DPrintf(kv.me, "!kv.keyInGroup due to reconfig %+v \n", op)
 			return ErrWrongGroup
 		}
 
@@ -240,7 +242,7 @@ func (kv *ShardKV) checkIndex(index int, command interface{}) bool {
 
 	// if we recieve a different command at this index, we will find correspond
 	// rf server is no longer a leader and hence return false in startOp
-	return ok && appliedCommand == command
+	return ok && reflect.DeepEqual(appliedCommand, command)
 }
 
 func (kv *ShardKV) readFromApplyCh() {
@@ -259,7 +261,6 @@ func (kv *ShardKV) readFromApplyCh() {
 }
 
 func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
-
 	kv.CommitIndex = commandIndex
 	DPrintf(kv.me, "command is %+v with index = %d\n", command, commandIndex)
 
@@ -273,6 +274,10 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 	if ok && op.OpType != "" {
 		if kv.ClientKeySerialNumber[op.Client] == nil {
 			kv.ClientKeySerialNumber[op.Client] = make(map[string]int)
+		}
+
+		if op.OpType == "Reconfig" {
+			kv.reconfigNL(op.Config)
 		}
 
 		serialNumber, ok := kv.ClientKeySerialNumber[op.Client][op.Key]
@@ -391,18 +396,43 @@ func (kv *ShardKV) restoreFromSnapshot() {
 
 func (kv *ShardKV) checkConfig() {
 	for !kv.killed() {
-		oldNumber := kv.config.Num
-
-		kv.mu.Lock()
-		kv.config = kv.sm.Query(-1)
-		kv.mu.Unlock()
-
-		if oldNumber != kv.config.Num {
-			DPrintf(kv.me, "new config is %+v", kv.config)
+		if kv.isLeader() {
+			kv.mu.Lock()
+			oldNumber := kv.config.Num
+			config := kv.sm.Query(-1)
+			if oldNumber != config.Num {
+				kv.rf.Start(kv.makeReconfigOp(config))
+				kv.reconfigNL(config)
+			}
+			kv.mu.Unlock()
 		}
 
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func (kv *ShardKV) reconfigNL(config shardctrler.Config) {
+	DPrintf(kv.me, "new config is %+v", config)
+	kv.config = config
+}
+
+func (kv *ShardKV) makeReconfigOp(config shardctrler.Config) Op {
+	op := Op{}
+	op.OpType = "Reconfig"
+
+	op.Config = shardctrler.Config{}
+	op.Config.Num = config.Num
+	for i := 0; i < shardctrler.NShards; i++ {
+		op.Config.Shards[i] = config.Shards[i]
+	}
+
+	op.Config.Groups = make(map[int][]string)
+	for k, v := range config.Groups {
+		op.Config.Groups[k] = make([]string, len(v))
+		copy(op.Config.Groups[k], v)
+	}
+
+	return op
 }
 
 //
