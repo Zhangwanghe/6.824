@@ -14,7 +14,7 @@ import (
 	"6.824/shardctrler"
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(index int, format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -84,8 +84,12 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	}
 
 	op := Op{"Get", args.Key, "", args.Client, args.SerialNumber}
-	if !kv.startAndWaitForOp(op) {
-		reply.Err = ErrWrongLeader
+	err := kv.startAndWaitForOp(op)
+	if err != OK {
+		reply.Err = err
+		return
+	} else if !kv.keyInGroup(args.Key) {
+		reply.Err = ErrWrongGroup
 		return
 	}
 
@@ -127,8 +131,12 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 
 	op := Op{args.Op, args.Key, args.Value, args.Client, args.SerialNumber}
-	if !kv.startAndWaitForOp(op) {
-		reply.Err = ErrWrongLeader
+	err := kv.startAndWaitForOp(op)
+	if err != OK {
+		reply.Err = err
+		return
+	} else if !kv.keyInGroup(args.Key) {
+		reply.Err = ErrWrongGroup
 		return
 	}
 
@@ -171,28 +179,33 @@ func (kv *ShardKV) keyInGroup(key string) bool {
 	return gid == kv.gid
 }
 
-func (kv *ShardKV) startAndWaitForOp(op Op) bool {
+func (kv *ShardKV) startAndWaitForOp(op Op) Err {
 	ok, index := kv.startAndAddWait(op)
 	if !ok {
-		return false
+		return ErrWrongLeader
 	}
 
 	DPrintf(kv.me, "start op is %+v \n", op)
 
 	for !kv.killed() {
 		if kv.checkIndex(index, op) {
-			return true
+			return OK
 		}
 
 		if !kv.isLeader() {
 			DPrintf(kv.me, "not a leader %+v \n", op)
-			break
+			return ErrWrongLeader
+		}
+
+		if !kv.keyInGroup(op.Key) {
+			DPrintf(kv.me, "reconfig %+v \n", op)
+			return ErrWrongGroup
 		}
 
 		time.Sleep(2 * time.Millisecond)
 	}
 
-	return false
+	return ErrWrongLeader
 }
 
 func (kv *ShardKV) startAndAddWait(op Op) (bool, int) {
