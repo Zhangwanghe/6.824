@@ -11,9 +11,10 @@ import (
 	"6.824/labgob"
 	"6.824/labrpc"
 	"6.824/raft"
+	"6.824/shardctrler"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(index int, format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -46,40 +47,50 @@ type ShardKV struct {
 	gid          int
 	ctrlers      []*labrpc.ClientEnd
 	maxraftstate int // snapshot if log grows this big
+	sm           *shardctrler.Clerk
 
 	// Your definitions here.
-	dead               int32 // set by Kill()
-	persister          *raft.Persister
-	Appliedlogs        map[int]interface{}
-	Requiredlogs       map[int]int
-	ClientSerialNumber map[int64]int
-	CommitIndex        int
-	checkedLeader      bool
-	KeyValues          map[string]string
+	dead                  int32 // set by Kill()
+	persister             *raft.Persister
+	Appliedlogs           map[int]interface{}
+	Requiredlogs          map[int]int
+	ClientKeySerialNumber map[int64]map[string]int
+	CommitIndex           int
+	checkedLeader         bool
+	KeyValues             map[string]string
+	config                shardctrler.Config
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	if !kv.keyInGroup(args.Key) {
+		DPrintf(kv.me, "Get !keyInGroup args = %+v\n", args)
+		reply.Err = ErrWrongGroup
+		return
+	}
+
 	ok, val := kv.hasExecuted(args.Client, args.SerialNumber, args.Key)
 	if ok {
 		DPrintf(kv.me, "Get hasExecuted\n")
 		reply.Value = val
+		reply.Err = OK
 		return
 	}
 
-	if !kv.canExecute(args.Client, args.SerialNumber) {
+	if !kv.canExecute(args.Client, args.SerialNumber, args.Key) {
 		DPrintf(kv.me, "Get !canExecute args = %+v\n", args)
-		reply.Err = "wrong order"
+		reply.Err = ErrWrongOrder
 		return
 	}
 
 	op := Op{"Get", args.Key, "", args.Client, args.SerialNumber}
 	if !kv.startAndWaitForOp(op) {
-		reply.Err = "wrong leader"
+		reply.Err = ErrWrongLeader
 		return
 	}
 
 	reply.Value = kv.GetVal(args.Key)
+	reply.Err = OK
 }
 
 func (kv *ShardKV) GetVal(key string) string {
@@ -96,25 +107,32 @@ func (kv *ShardKV) GetVal(key string) string {
 
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
-	ok, _ := kv.hasExecuted(args.Client, args.SerialNumber, args.Key)
-	if ok {
-		DPrintf(kv.me, "PutAppend hasExecuted\n")
+	if !kv.keyInGroup(args.Key) {
+		DPrintf(kv.me, "PutAppend !keyInGroup args = %+v\n", args)
+		reply.Err = ErrWrongGroup
 		return
 	}
 
-	if !kv.canExecute(args.Client, args.SerialNumber) {
+	ok, _ := kv.hasExecuted(args.Client, args.SerialNumber, args.Key)
+	if ok {
+		DPrintf(kv.me, "PutAppend hasExecuted args = %+v\n", args)
+		reply.Err = OK
+		return
+	}
+
+	if !kv.canExecute(args.Client, args.SerialNumber, args.Key) {
 		DPrintf(kv.me, "PutAppend !canExecute args = %+v\n", args)
-		reply.Err = "wrong order"
+		reply.Err = ErrWrongOrder
 		return
 	}
 
 	op := Op{args.Op, args.Key, args.Value, args.Client, args.SerialNumber}
 	if !kv.startAndWaitForOp(op) {
-		// todo whether to return leaderId if possible
-		reply.Err = "wrong leader"
+		reply.Err = ErrWrongLeader
 		return
 	}
 
+	reply.Err = OK
 	DPrintf(kv.me, "successful putappend with %+v\n", args)
 }
 
@@ -122,9 +140,13 @@ func (kv *ShardKV) hasExecuted(client int64, serialNumber int, key string) (bool
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	if kv.ClientKeySerialNumber[client] == nil {
+		kv.ClientKeySerialNumber[client] = make(map[string]int)
+	}
+
 	executed := false
 	var val string
-	if kv.ClientSerialNumber[client] >= serialNumber {
+	if kv.ClientKeySerialNumber[client][key] >= serialNumber {
 		executed = true
 		val = kv.KeyValues[key]
 	}
@@ -132,11 +154,21 @@ func (kv *ShardKV) hasExecuted(client int64, serialNumber int, key string) (bool
 	return executed, val
 }
 
-func (kv *ShardKV) canExecute(client int64, serialNumber int) bool {
+func (kv *ShardKV) canExecute(client int64, serialNumber int, key string) bool {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	return kv.ClientSerialNumber[client] == serialNumber-1
+	return kv.ClientKeySerialNumber[client][key] == serialNumber-1
+}
+
+func (kv *ShardKV) keyInGroup(key string) bool {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	shard := key2shard(key)
+	gid := kv.config.Shards[shard]
+
+	return gid == kv.gid
 }
 
 func (kv *ShardKV) startAndWaitForOp(op Op) bool {
@@ -225,8 +257,12 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 
 	// persist putandappend result
 	op, ok := command.(Op)
-	if ok {
-		serialNumber, ok := kv.ClientSerialNumber[op.Client]
+	if ok && op.OpType != "" {
+		if kv.ClientKeySerialNumber[op.Client] == nil {
+			kv.ClientKeySerialNumber[op.Client] = make(map[string]int)
+		}
+
+		serialNumber, ok := kv.ClientKeySerialNumber[op.Client][op.Key]
 		if ok && serialNumber >= op.SerialNumber {
 			DPrintf(kv.me, "has dealt %d", op.SerialNumber)
 			return
@@ -238,7 +274,7 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 			kv.AppendValNL(op.Key, op.Value)
 		}
 
-		kv.ClientSerialNumber[op.Client] = op.SerialNumber
+		kv.ClientKeySerialNumber[op.Client][op.Key] = op.SerialNumber
 	}
 }
 
@@ -295,7 +331,7 @@ func (kv *ShardKV) makeSnapshot() {
 	e := labgob.NewEncoder(w)
 	e.Encode(kv.Appliedlogs)
 	e.Encode(kv.Requiredlogs)
-	e.Encode(kv.ClientSerialNumber)
+	e.Encode(kv.ClientKeySerialNumber)
 	e.Encode(kv.CommitIndex)
 	e.Encode(kv.KeyValues)
 	DPrintf(kv.me, "make snapshot from %d", kv.CommitIndex)
@@ -311,12 +347,12 @@ func (kv *ShardKV) readSnapShotNL(data []byte) {
 	d := labgob.NewDecoder(r)
 	var appliedlogs map[int]interface{}
 	var requiredlogs map[int]int
-	var clientSerialNumber map[int64]int
+	var clientKeySerialNumber map[int64]map[string]int
 	var commitIndex int
 	var keyValues map[string]string
 	if d.Decode(&appliedlogs) != nil ||
 		d.Decode(&requiredlogs) != nil ||
-		d.Decode(&clientSerialNumber) != nil ||
+		d.Decode(&clientKeySerialNumber) != nil ||
 		d.Decode(&commitIndex) != nil ||
 		d.Decode(&keyValues) != nil {
 
@@ -325,7 +361,7 @@ func (kv *ShardKV) readSnapShotNL(data []byte) {
 	} else {
 		kv.Appliedlogs = appliedlogs
 		kv.Requiredlogs = requiredlogs
-		kv.ClientSerialNumber = clientSerialNumber
+		kv.ClientKeySerialNumber = clientKeySerialNumber
 		kv.CommitIndex = commitIndex
 		kv.KeyValues = keyValues
 	}
@@ -338,6 +374,22 @@ func (kv *ShardKV) restoreFromSnapshot() {
 	// todo atomic or double check
 	kv.readSnapShotNL(kv.persister.ReadSnapshot())
 	DPrintf(kv.me, "recovered snapshot is %+v", kv.KeyValues)
+}
+
+func (kv *ShardKV) checkConfig() {
+	for !kv.killed() {
+		oldNumber := kv.config.Num
+
+		kv.mu.Lock()
+		kv.config = kv.sm.Query(-1)
+		kv.mu.Unlock()
+
+		if oldNumber != kv.config.Num {
+			DPrintf(kv.me, "new config is %+v", kv.config)
+		}
+
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 //
@@ -397,12 +449,13 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.gid = gid
 	kv.ctrlers = ctrlers
 	kv.persister = persister
+	kv.sm = shardctrler.MakeClerk(ctrlers)
 
 	// Your initialization code here.
 	kv.KeyValues = make(map[string]string)
 	kv.Appliedlogs = make(map[int]interface{})
 	kv.Requiredlogs = make(map[int]int)
-	kv.ClientSerialNumber = make(map[(int64)]int)
+	kv.ClientKeySerialNumber = make(map[int64]map[string]int)
 	kv.restoreFromSnapshot()
 
 	// Use something like this to talk to the shardctrler:
@@ -418,6 +471,8 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	if kv.maxraftstate != -1 {
 		go kv.checkSnapshot()
 	}
+
+	go kv.checkConfig()
 
 	return kv
 }
