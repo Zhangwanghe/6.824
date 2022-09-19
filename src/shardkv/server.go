@@ -493,7 +493,7 @@ func (kv *ShardKV) sendReconfigInfoNL(oldConfig shardctrler.Config, newConfig sh
 		}
 	}
 
-	timer := time.NewTimer(100 * time.Microsecond)
+	timer := time.NewTimer(100 * time.Millisecond)
 	defer timer.Stop()
 
 	for !kv.killed() {
@@ -515,7 +515,7 @@ func (kv *ShardKV) sendReconfigInfoNL(oldConfig shardctrler.Config, newConfig sh
 		}
 
 		timer.Stop()
-		timer.Reset(100 * time.Microsecond)
+		timer.Reset(100 * time.Millisecond)
 
 		select {
 		case shard := <-ch:
