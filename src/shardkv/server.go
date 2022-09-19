@@ -17,11 +17,11 @@ import (
 
 const Debug = false
 
-func DPrintf(index int, format string, a ...interface{}) (n int, err error) {
+func DPrintf(group int, index int, format string, a ...interface{}) (n int, err error) {
 	if Debug {
 		time := time.Now()
 		timeFormat := "2006-01-02 15:04:05.000"
-		prefix := fmt.Sprintf("%s S%d ", time.Format(timeFormat), index)
+		prefix := fmt.Sprintf("%s G%d-S%d ", time.Format(timeFormat), group, index)
 		format = prefix + format
 		log.Printf(format, a...)
 	}
@@ -60,27 +60,27 @@ type ShardKV struct {
 	CommitIndex           int
 	checkedLeader         bool
 	KeyValues             map[string]string
-	config                shardctrler.Config
+	configs               []shardctrler.Config
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
 	if !kv.keyInGroup(args.Key) {
-		DPrintf(kv.me, "Get !keyInGroup args = %+v\n", args)
+		DPrintf(kv.gid, kv.me, "Get !keyInGroup args = %+v\n", args)
 		reply.Err = ErrWrongGroup
 		return
 	}
 
 	ok, val := kv.hasExecuted(args.Client, args.SerialNumber, args.Key)
 	if ok {
-		DPrintf(kv.me, "Get hasExecuted\n")
+		DPrintf(kv.gid, kv.me, "Get hasExecuted\n")
 		reply.Value = val
 		reply.Err = OK
 		return
 	}
 
 	if !kv.canExecute(args.Client, args.SerialNumber, args.Key) {
-		DPrintf(kv.me, "Get !canExecute args = %+v\n", args)
+		DPrintf(kv.gid, kv.me, "Get !canExecute args = %+v\n", args)
 		reply.Err = ErrWrongOrder
 		return
 	}
@@ -114,20 +114,20 @@ func (kv *ShardKV) GetVal(key string) string {
 func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
 	if !kv.keyInGroup(args.Key) {
-		DPrintf(kv.me, "PutAppend !keyInGroup args = %+v\n", args)
+		DPrintf(kv.gid, kv.me, "PutAppend !keyInGroup args = %+v\n", args)
 		reply.Err = ErrWrongGroup
 		return
 	}
 
 	ok, _ := kv.hasExecuted(args.Client, args.SerialNumber, args.Key)
 	if ok {
-		DPrintf(kv.me, "PutAppend hasExecuted args = %+v\n", args)
+		DPrintf(kv.gid, kv.me, "PutAppend hasExecuted args = %+v\n", args)
 		reply.Err = OK
 		return
 	}
 
 	if !kv.canExecute(args.Client, args.SerialNumber, args.Key) {
-		DPrintf(kv.me, "PutAppend !canExecute args = %+v\n", args)
+		DPrintf(kv.gid, kv.me, "PutAppend !canExecute args = %+v\n", args)
 		reply.Err = ErrWrongOrder
 		return
 	}
@@ -143,7 +143,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	}
 
 	reply.Err = OK
-	DPrintf(kv.me, "successful putappend with %+v\n", args)
+	DPrintf(kv.gid, kv.me, "successful putappend with %+v\n", args)
 }
 
 func (kv *ShardKV) hasExecuted(client int64, serialNumber int, key string) (bool, string) {
@@ -175,8 +175,12 @@ func (kv *ShardKV) keyInGroup(key string) bool {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	if len(kv.configs) == 0 {
+		return false
+	}
+
 	shard := key2shard(key)
-	gid := kv.config.Shards[shard]
+	gid := kv.configs[len(kv.configs)-1].Shards[shard]
 
 	return gid == kv.gid
 }
@@ -187,7 +191,7 @@ func (kv *ShardKV) startAndWaitForOp(op Op) Err {
 		return ErrWrongLeader
 	}
 
-	DPrintf(kv.me, "start op is %+v \n", op)
+	DPrintf(kv.gid, kv.me, "start op is %+v \n", op)
 
 	for !kv.killed() {
 		if kv.checkIndex(index, op) {
@@ -195,12 +199,12 @@ func (kv *ShardKV) startAndWaitForOp(op Op) Err {
 		}
 
 		if !kv.isLeader() {
-			DPrintf(kv.me, "not a leader %+v \n", op)
+			DPrintf(kv.gid, kv.me, "not a leader %+v \n", op)
 			return ErrWrongLeader
 		}
 
 		if !kv.keyInGroup(op.Key) {
-			DPrintf(kv.me, "!kv.keyInGroup due to reconfig %+v \n", op)
+			DPrintf(kv.gid, kv.me, "!kv.keyInGroup due to reconfig %+v \n", op)
 			return ErrWrongGroup
 		}
 
@@ -262,7 +266,7 @@ func (kv *ShardKV) readFromApplyCh() {
 
 func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 	kv.CommitIndex = commandIndex
-	DPrintf(kv.me, "command is %+v with index = %d\n", command, commandIndex)
+	DPrintf(kv.gid, kv.me, "command is %+v with index = %d\n", command, commandIndex)
 
 	_, ok := kv.Requiredlogs[commandIndex]
 	if ok {
@@ -277,12 +281,17 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 		}
 
 		if op.OpType == "Reconfig" {
-			kv.reconfigNL(op.Config)
+			kv.configs = append(kv.configs, op.Config)
 		}
 
 		serialNumber, ok := kv.ClientKeySerialNumber[op.Client][op.Key]
 		if ok && serialNumber >= op.SerialNumber {
-			DPrintf(kv.me, "has dealt %d", op.SerialNumber)
+			DPrintf(kv.gid, kv.me, "has dealt %d", op.SerialNumber)
+			return
+		}
+
+		if kv.configs[len(kv.configs)-1].Shards[key2shard(op.Key)] != kv.gid {
+			DPrintf(kv.gid, kv.me, "!kv.keyInGroup due to reconfig when commiting %+v \n", op)
 			return
 		}
 
@@ -311,7 +320,7 @@ func (kv *ShardKV) AppendValNL(key string, val string) {
 }
 
 func (kv *ShardKV) dealWithSnapShotNL(snapshot []byte, snapshotIndex int) {
-	DPrintf(kv.me, "receiev snapshot is %+v with index %d\n", snapshot, snapshotIndex)
+	DPrintf(kv.gid, kv.me, "receiev snapshot is %+v with index %d\n", snapshot, snapshotIndex)
 
 	kv.readSnapShotNL(snapshot)
 	kv.CommitIndex = snapshotIndex
@@ -352,7 +361,7 @@ func (kv *ShardKV) makeSnapshot() {
 	e.Encode(kv.ClientKeySerialNumber)
 	e.Encode(kv.CommitIndex)
 	e.Encode(kv.KeyValues)
-	DPrintf(kv.me, "make snapshot from %d", kv.CommitIndex)
+	DPrintf(kv.gid, kv.me, "make snapshot from %d", kv.CommitIndex)
 	kv.rf.Snapshot(kv.CommitIndex, w.Bytes())
 }
 
@@ -391,18 +400,21 @@ func (kv *ShardKV) restoreFromSnapshot() {
 
 	// todo atomic or double check
 	kv.readSnapShotNL(kv.persister.ReadSnapshot())
-	DPrintf(kv.me, "recovered snapshot is %+v", kv.KeyValues)
+	DPrintf(kv.gid, kv.me, "recovered snapshot is %+v", kv.KeyValues)
 }
 
 func (kv *ShardKV) checkConfig() {
 	for !kv.killed() {
 		if kv.isLeader() {
 			kv.mu.Lock()
-			oldNumber := kv.config.Num
+			oldNumber := 0
+			if len(kv.configs) > 0 {
+				oldNumber = kv.configs[len(kv.configs)-1].Num
+			}
+
 			config := kv.sm.Query(-1)
 			if oldNumber != config.Num {
-				kv.rf.Start(kv.makeReconfigOp(config))
-				kv.reconfigNL(config)
+				kv.rf.Start(kv.makeReconfigOpNL(config))
 			}
 			kv.mu.Unlock()
 		}
@@ -411,7 +423,7 @@ func (kv *ShardKV) checkConfig() {
 	}
 }
 
-func (kv *ShardKV) makeReconfigOp(config shardctrler.Config) Op {
+func (kv *ShardKV) makeReconfigOpNL(config shardctrler.Config) Op {
 	op := Op{}
 	op.OpType = "Reconfig"
 
@@ -430,84 +442,122 @@ func (kv *ShardKV) makeReconfigOp(config shardctrler.Config) Op {
 	return op
 }
 
+func (kv *ShardKV) reconfig() {
+	for !kv.killed() {
+		if ok, oldConfig, newConifg := kv.getReconfigData(); ok {
+			kv.sendReconfigInfoNL(oldConfig, newConifg)
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (kv *ShardKV) getReconfigData() (bool, shardctrler.Config, shardctrler.Config) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if len(kv.configs) <= 1 {
+		return false, shardctrler.Config{}, shardctrler.Config{}
+	}
+
+	return true, kv.configs[0], kv.configs[1]
+}
+
 type MoveShardsArgs struct {
-	lastConfigNumber      int
-	KeyValue              map[string]string
-	ClientKeySerialNumber map[int64]map[string]int
+	LastConfigNumber int
+	GroupId          int
 }
 
 type MoveShardsReply struct {
-	succeed bool
+	Succeed               bool
+	KeyValue              map[string]string
+	ClientKeySerialNumber map[int64]map[string]int
 }
 
 func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 
 }
 
-func (kv *ShardKV) reconfigNL(config shardctrler.Config) {
-	DPrintf(kv.me, "new config is %+v", config)
+func (kv *ShardKV) sendReconfigInfoNL(oldConfig shardctrler.Config, newConfig shardctrler.Config) {
+	DPrintf(kv.gid, kv.me, "new config is %+v", newConfig)
 
 	// both leader and follower will send this information in case leader change before succeeding
 	// todo what if a server hasn't received reconfig info from last reconfig
 	// but start a new config and has to send missing info to other servers
 	argsForGroup := make(map[int]MoveShardsArgs)
 	for i := 0; i < shardctrler.NShards; i++ {
-		if kv.gid == kv.config.Shards[i] && kv.gid != config.Shards[i] {
+		if kv.gid == oldConfig.Shards[i] && kv.gid != newConfig.Shards[i] {
 			// group change to config.Shards[i]
-			args := kv.makeMoveShardArgs(i, kv.config.Num)
+			args := kv.makeMoveShardArgsNL(oldConfig.Num, kv.gid)
 			argsForGroup[i] = args
 		}
 	}
 
-	go kv.sendReconfigInfo(config, argsForGroup)
+	timer := time.NewTimer(100 * time.Microsecond)
+	defer timer.Stop()
 
-	kv.config = config
-}
-
-func (kv *ShardKV) sendReconfigInfo(config shardctrler.Config, argsForGroup map[int]MoveShardsArgs) {
-	for {
+	for !kv.killed() {
+		ch := make(chan int)
 		for shard, args := range argsForGroup {
-			if servers, ok := config.Groups[config.Shards[shard]]; ok {
+			if servers, ok := oldConfig.Groups[oldConfig.Shards[shard]]; ok {
 				for si := 0; si < len(servers); si++ {
 					srv := kv.make_end(servers[si])
-					go func(shard int) {
+					go func(shard int, args MoveShardsArgs) {
 						var reply MoveShardsReply
 						ok := srv.Call("ShardKV.MoveShards", &args, &reply)
-						if ok && reply.succeed {
-							delete(argsForGroup, shard)
+						if ok {
+							// todo add to keyvalue
+							ch <- shard
 						}
-					}(shard)
+					}(shard, args)
 				}
 			}
 		}
 
-		time.Sleep(10 * time.Microsecond)
+		timer.Stop()
+		timer.Reset(100 * time.Microsecond)
+
+		select {
+		case shard := <-ch:
+			{
+				delete(argsForGroup, shard)
+			}
+		case <-timer.C:
+			{
+				continue
+			}
+		}
 	}
+
+	kv.mu.Lock()
+	kv.configs = kv.configs[1:]
+	kv.mu.Unlock()
 }
 
-func (kv *ShardKV) makeMoveShardArgs(shard int, configNumber int) MoveShardsArgs {
+func (kv *ShardKV) makeMoveShardArgsNL(configNumber int, groupId int) MoveShardsArgs {
 	var args MoveShardsArgs
-	args.lastConfigNumber = configNumber
+	args.LastConfigNumber = configNumber
+	args.GroupId = groupId
 
-	args.KeyValue = make(map[string]string)
-	for k, v := range kv.KeyValues {
-		if key2shard(k) == shard {
-			args.KeyValue[k] = v
-		}
-	}
+	// args.KeyValue = make(map[string]string)
+	// for k, v := range kv.KeyValues {
+	// 	if key2shard(k) == shard {
+	// 		args.KeyValue[k] = v
+	// 	}
+	// }
 
-	args.ClientKeySerialNumber = make(map[int64]map[string]int)
-	for c, ks := range kv.ClientKeySerialNumber {
-		for k, s := range ks {
-			if _, ok := args.KeyValue[k]; ok {
-				if args.ClientKeySerialNumber[c] == nil {
-					args.ClientKeySerialNumber[c] = make(map[string]int)
-				}
+	// args.ClientKeySerialNumber = make(map[int64]map[string]int)
+	// for c, ks := range kv.ClientKeySerialNumber {
+	// 	for k, s := range ks {
+	// 		if _, ok := args.KeyValue[k]; ok {
+	// 			if args.ClientKeySerialNumber[c] == nil {
+	// 				args.ClientKeySerialNumber[c] = make(map[string]int)
+	// 			}
 
-				args.ClientKeySerialNumber[c][k] = s
-			}
-		}
-	}
+	// 			args.ClientKeySerialNumber[c][k] = s
+	// 		}
+	// 	}
+	// }
 
 	return args
 }
@@ -593,6 +643,8 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	}
 
 	go kv.checkConfig()
+
+	go kv.reconfig()
 
 	return kv
 }
