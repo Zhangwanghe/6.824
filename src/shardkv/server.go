@@ -670,7 +670,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 
 	go kv.checkConfig()
 
-	go kv.reconcheckConfigDifffig()
+	go kv.checkConfigDiff()
 
 	return kv
 }
