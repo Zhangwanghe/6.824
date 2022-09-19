@@ -411,11 +411,6 @@ func (kv *ShardKV) checkConfig() {
 	}
 }
 
-func (kv *ShardKV) reconfigNL(config shardctrler.Config) {
-	DPrintf(kv.me, "new config is %+v", config)
-	kv.config = config
-}
-
 func (kv *ShardKV) makeReconfigOp(config shardctrler.Config) Op {
 	op := Op{}
 	op.OpType = "Reconfig"
@@ -433,6 +428,88 @@ func (kv *ShardKV) makeReconfigOp(config shardctrler.Config) Op {
 	}
 
 	return op
+}
+
+type MoveShardsArgs struct {
+	lastConfigNumber      int
+	KeyValue              map[string]string
+	ClientKeySerialNumber map[int64]map[string]int
+}
+
+type MoveShardsReply struct {
+	succeed bool
+}
+
+func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
+
+}
+
+func (kv *ShardKV) reconfigNL(config shardctrler.Config) {
+	DPrintf(kv.me, "new config is %+v", config)
+
+	// both leader and follower will send this information in case leader change before succeeding
+	// todo what if a server hasn't received reconfig info from last reconfig
+	// but start a new config and has to send missing info to other servers
+	argsForGroup := make(map[int]MoveShardsArgs)
+	for i := 0; i < shardctrler.NShards; i++ {
+		if kv.gid == kv.config.Shards[i] && kv.gid != config.Shards[i] {
+			// group change to config.Shards[i]
+			args := kv.makeMoveShardArgs(i, kv.config.Num)
+			argsForGroup[i] = args
+		}
+	}
+
+	go kv.sendReconfigInfo(config, argsForGroup)
+
+	kv.config = config
+}
+
+func (kv *ShardKV) sendReconfigInfo(config shardctrler.Config, argsForGroup map[int]MoveShardsArgs) {
+	for {
+		for shard, args := range argsForGroup {
+			if servers, ok := config.Groups[config.Shards[shard]]; ok {
+				for si := 0; si < len(servers); si++ {
+					srv := kv.make_end(servers[si])
+					go func(shard int) {
+						var reply MoveShardsReply
+						ok := srv.Call("ShardKV.MoveShards", &args, &reply)
+						if ok && reply.succeed {
+							delete(argsForGroup, shard)
+						}
+					}(shard)
+				}
+			}
+		}
+
+		time.Sleep(10 * time.Microsecond)
+	}
+}
+
+func (kv *ShardKV) makeMoveShardArgs(shard int, configNumber int) MoveShardsArgs {
+	var args MoveShardsArgs
+	args.lastConfigNumber = configNumber
+
+	args.KeyValue = make(map[string]string)
+	for k, v := range kv.KeyValues {
+		if key2shard(k) == shard {
+			args.KeyValue[k] = v
+		}
+	}
+
+	args.ClientKeySerialNumber = make(map[int64]map[string]int)
+	for c, ks := range kv.ClientKeySerialNumber {
+		for k, s := range ks {
+			if _, ok := args.KeyValue[k]; ok {
+				if args.ClientKeySerialNumber[c] == nil {
+					args.ClientKeySerialNumber[c] = make(map[string]int)
+				}
+
+				args.ClientKeySerialNumber[c][k] = s
+			}
+		}
+	}
+
+	return args
 }
 
 //
