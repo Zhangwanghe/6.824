@@ -500,6 +500,7 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	DPrintf(kv.gid, kv.me, "MoveShards args is %+v\n", args)
 	// todo when having partition, how to ensure we are contacting correct leader?
 	if !kv.isLeader() || !kv.hasConvertedToConfigNL(args.LastConfigNumber) {
 		reply.Succeed = false
@@ -527,6 +528,8 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 			}
 		}
 	}
+
+	DPrintf(kv.gid, kv.me, "MoveShards reply is %+v\n", reply)
 }
 
 func (kv *ShardKV) hasConvertedToConfigNL(configNumber int) bool {
@@ -554,7 +557,7 @@ func (kv *ShardKV) sendReconfigInfoNL(config shardctrler.Config, argsForGroup ma
 	timer := time.NewTimer(100 * time.Millisecond)
 	defer timer.Stop()
 
-	for !kv.killed() {
+	for !kv.killed() && len(argsForGroup) > 0 {
 		ch := make(chan int)
 		for _, args := range argsForGroup {
 			if servers, ok := config.Groups[config.Shards[args.Shard]]; ok {
@@ -562,7 +565,9 @@ func (kv *ShardKV) sendReconfigInfoNL(config shardctrler.Config, argsForGroup ma
 					srv := kv.make_end(servers[si])
 					go func(args MoveShardsArgs) {
 						var reply MoveShardsReply
+						DPrintf(kv.gid, kv.me, "sendReconfigInfoNL args is %+v\n", args)
 						ok := srv.Call("ShardKV.MoveShards", &args, &reply)
+						DPrintf(kv.gid, kv.me, "sendReconfigInfoNL reply is %+v\n", reply)
 						if ok {
 							kv.dealWithMakeMoveShardReply(reply)
 							ch <- args.Shard
