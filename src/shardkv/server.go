@@ -162,6 +162,10 @@ func (kv *ShardKV) hasExecuted(client int64, serialNumber int, key string) (bool
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	return kv.hasExecutedNL(client, serialNumber, key)
+}
+
+func (kv *ShardKV) hasExecutedNL(client int64, serialNumber int, key string) (bool, string) {
 	if kv.ClientKeySerialNumber[client] == nil {
 		kv.ClientKeySerialNumber[client] = make(map[string]int)
 	}
@@ -299,16 +303,11 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 	// persist putandappend result
 	op, ok := command.(Op)
 	if ok && op.OpType != "" {
-		if kv.ClientKeySerialNumber[op.Client] == nil {
-			kv.ClientKeySerialNumber[op.Client] = make(map[string]int)
-		}
-
 		if op.OpType == "Reconfig" {
 			kv.configs = append(kv.configs, op.Config)
 		}
 
-		serialNumber, ok := kv.ClientKeySerialNumber[op.Client][op.Key]
-		if ok && serialNumber >= op.SerialNumber {
+		if ok, _ = kv.hasExecutedNL(op.Client, op.SerialNumber, op.Key); ok {
 			DPrintf(kv.gid, kv.me, "has dealt %d", op.SerialNumber)
 			return
 		}
@@ -544,6 +543,7 @@ func (kv *ShardKV) reconfig(oldConfig shardctrler.Config, newConfig shardctrler.
 			args := kv.makeMoveShardArgsNL(oldConfig.Num, i)
 			argsForGroup[i] = args
 		}
+		// todo wait for request from other clients
 	}
 
 	kv.sendReconfigInfoNL(oldConfig, argsForGroup)
@@ -607,6 +607,16 @@ func (kv *ShardKV) dealWithMakeMoveShardReply(reply MoveShardsReply) {
 		return
 	}
 
+	for k, v := range reply.KeyValue {
+		kv.PutValNL(k, v)
+	}
+
+	for c, ks := range reply.ClientKeySerialNumber {
+		for k, s := range ks {
+			kv.hasExecutedNL(c, s, k)
+			kv.ClientKeySerialNumber[c][k] = s
+		}
+	}
 }
 
 //
