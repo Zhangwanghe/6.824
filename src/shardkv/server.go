@@ -32,12 +32,13 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	OpType       string
-	Key          string
-	Value        string
-	Client       int64
-	SerialNumber int
-	Config       shardctrler.Config
+	OpType         string
+	Key            string
+	Value          string
+	Client         int64
+	SerialNumber   int
+	Config         shardctrler.Config
+	moveShardReply MoveShardsReply
 }
 
 type ShardKV struct {
@@ -91,7 +92,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
-	op := Op{"Get", args.Key, "", args.Client, args.SerialNumber, shardctrler.Config{}}
+	op := Op{"Get", args.Key, "", args.Client, args.SerialNumber, shardctrler.Config{}, MoveShardsReply{}}
 	err := kv.startAndWaitForOp(op)
 	if err != OK {
 		reply.Err = err
@@ -144,7 +145,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
-	op := Op{args.Op, args.Key, args.Value, args.Client, args.SerialNumber, shardctrler.Config{}}
+	op := Op{args.Op, args.Key, args.Value, args.Client, args.SerialNumber, shardctrler.Config{}, MoveShardsReply{}}
 	err := kv.startAndWaitForOp(op)
 	if err != OK {
 		reply.Err = err
@@ -305,6 +306,8 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 	if ok && op.OpType != "" {
 		if op.OpType == "Reconfig" {
 			kv.configs = append(kv.configs, op.Config)
+		} else if op.OpType == "MoveShards" {
+			kv.dealWithMoveShardReply(op.moveShardReply)
 		}
 
 		if ok, _ = kv.hasExecutedNL(op.Client, op.SerialNumber, op.Key); ok {
@@ -439,6 +442,8 @@ func (kv *ShardKV) checkConfig() {
 				kv.rf.Start(kv.makeReconfigOpNL(config))
 			}
 			kv.mu.Unlock()
+
+			kv.waitForConfigNumber(oldNumber)
 		}
 
 		time.Sleep(100 * time.Millisecond)
@@ -464,10 +469,26 @@ func (kv *ShardKV) makeReconfigOpNL(config shardctrler.Config) Op {
 	return op
 }
 
+func (kv *ShardKV) waitForConfigNumber(oldConfigNumber int) {
+	for {
+		kv.mu.Lock()
+		newConfigNumber := kv.configs[len(kv.configs)-1].Num
+		kv.mu.Unlock()
+
+		if oldConfigNumber != newConfigNumber {
+			break
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func (kv *ShardKV) checkConfigDiff() {
 	for !kv.killed() {
-		if ok, oldConfig, newConifg := kv.getReconfigData(); ok {
-			kv.reconfig(oldConfig, newConifg)
+		if kv.isLeader() {
+			if ok, oldConfig, newConifg := kv.getReconfigData(); ok {
+				kv.reconfig(oldConfig, newConifg)
+			}
 		}
 
 		time.Sleep(10 * time.Millisecond)
@@ -550,6 +571,7 @@ func (kv *ShardKV) reconfig(oldConfig shardctrler.Config, newConfig shardctrler.
 	}
 
 	kv.sendReconfigInfoNL(oldConfig, argsForGroup)
+	// todo move to dealwith command
 	kv.removeOldConfig()
 }
 
@@ -569,7 +591,7 @@ func (kv *ShardKV) sendReconfigInfoNL(config shardctrler.Config, argsForGroup ma
 						ok := srv.Call("ShardKV.MoveShards", &args, &reply)
 						DPrintf(kv.gid, kv.me, "sendReconfigInfoNL reply is %+v\n", reply)
 						if ok {
-							kv.dealWithMakeMoveShardReply(reply)
+							kv.rf.Start(kv.makeMoveShardsOpNL(reply))
 							ch <- args.Shard
 						}
 					}(args)
@@ -593,10 +615,17 @@ func (kv *ShardKV) sendReconfigInfoNL(config shardctrler.Config, argsForGroup ma
 	}
 }
 
+func (kv *ShardKV) makeMoveShardsOpNL(reply MoveShardsReply) Op {
+	op := Op{}
+	op.OpType = "MoveShards"
+	op.moveShardReply = reply
+
+	return op
+}
+
 func (kv *ShardKV) removeOldConfig() {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-
 	kv.configs = kv.configs[1:]
 }
 
@@ -607,7 +636,10 @@ func (kv *ShardKV) makeMoveShardArgsNL(configNumber int, shard int) MoveShardsAr
 	return args
 }
 
-func (kv *ShardKV) dealWithMakeMoveShardReply(reply MoveShardsReply) {
+func (kv *ShardKV) dealWithMoveShardReply(reply MoveShardsReply) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
 	if !reply.Succeed {
 		return
 	}
@@ -673,6 +705,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
+	labgob.Register(MoveShardsReply{})
 
 	kv := new(ShardKV)
 	kv.me = me
