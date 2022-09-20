@@ -52,16 +52,15 @@ type ShardKV struct {
 	sm           *shardctrler.Clerk
 
 	// Your definitions here.
-	dead                      int32 // set by Kill()
-	persister                 *raft.Persister
-	Appliedlogs               map[int]interface{}
-	Requiredlogs              map[int]int
-	ClientKeySerialNumber     map[int64]map[string]int
-	CommitIndex               int
-	checkedLeader             bool
-	KeyValues                 map[string]string
-	configs                   []shardctrler.Config
-	unmovedShardsConfigNumber map[int]int
+	dead                  int32 // set by Kill()
+	persister             *raft.Persister
+	Appliedlogs           map[int]interface{}
+	Requiredlogs          map[int]int
+	ClientKeySerialNumber map[int64]map[string]int
+	CommitIndex           int
+	checkedLeader         bool
+	KeyValues             map[string]string
+	configs               []shardctrler.Config
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
@@ -176,6 +175,10 @@ func (kv *ShardKV) keyInGroup(key string) bool {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
+	return kv.keyInGroupNL(key)
+}
+
+func (kv *ShardKV) keyInGroupNL(key string) bool {
 	if len(kv.configs) == 0 {
 		return false
 	}
@@ -291,7 +294,7 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 			return
 		}
 
-		if kv.configs[len(kv.configs)-1].Shards[key2shard(op.Key)] != kv.gid {
+		if !kv.keyInGroupNL(op.Key) {
 			DPrintf(kv.gid, kv.me, "!kv.keyInGroup due to reconfig when commiting %+v \n", op)
 			return
 		}
@@ -479,7 +482,8 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	if !kv.isLeader() {
+	// todo when having partition, how to ensure we are contacting correct leader?
+	if !kv.isLeader() || !kv.hasConvertedToConfigNL(args.LastConfigNumber) {
 		reply.Succeed = false
 		return
 	}
@@ -507,20 +511,19 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 	}
 }
 
+func (kv *ShardKV) hasConvertedToConfigNL(configNumber int) bool {
+	return len(kv.configs) > 0 && kv.configs[0].Num >= configNumber
+}
+
 func (kv *ShardKV) reconfig(oldConfig shardctrler.Config, newConfig shardctrler.Config) {
 	DPrintf(kv.gid, kv.me, "new config is %+v", newConfig)
 
-	// both leader and follower will send this information in case leader change before succeeding
-	// todo what if a server hasn't received reconfig info from last reconfig
-	// but start a new config and has to send missing info to other servers
 	argsForGroup := make(map[int]MoveShardsArgs)
 	for i := 0; i < shardctrler.NShards; i++ {
 		if kv.gid == oldConfig.Shards[i] && kv.gid != newConfig.Shards[i] {
 			// group change to config.Shards[i]
 			args := kv.makeMoveShardArgsNL(oldConfig.Num, i)
 			argsForGroup[i] = args
-		} else if kv.gid != oldConfig.Shards[i] && kv.gid == newConfig.Shards[i] {
-			kv.unmovedShardsConfigNumber[i] = oldConfig.Num
 		}
 	}
 
@@ -651,7 +654,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.Requiredlogs = make(map[int]int)
 	kv.ClientKeySerialNumber = make(map[int64]map[string]int)
 	// todo should snapshot new field in ShardKV?
-	kv.unmovedShardsConfigNumber = make(map[int]int)
 	kv.restoreFromSnapshot()
 
 	// Use something like this to talk to the shardctrler:
