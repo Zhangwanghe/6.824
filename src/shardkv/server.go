@@ -71,6 +71,12 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
+	if kv.isReconfiguring() {
+		DPrintf(kv.gid, kv.me, "Get isReconfiguring args = %+v\n", args)
+		reply.Err = ErrNoKey
+		return
+	}
+
 	ok, val := kv.hasExecuted(args.Client, args.SerialNumber, args.Key)
 	if ok {
 		DPrintf(kv.gid, kv.me, "Get hasExecuted\n")
@@ -116,6 +122,12 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	if !kv.keyInGroup(args.Key) {
 		DPrintf(kv.gid, kv.me, "PutAppend !keyInGroup args = %+v\n", args)
 		reply.Err = ErrWrongGroup
+		return
+	}
+
+	if kv.isReconfiguring() {
+		DPrintf(kv.gid, kv.me, "PutAppend isReconfiguring args = %+v\n", args)
+		reply.Err = ErrNoKey
 		return
 	}
 
@@ -187,6 +199,13 @@ func (kv *ShardKV) keyInGroupNL(key string) bool {
 	gid := kv.configs[len(kv.configs)-1].Shards[shard]
 
 	return gid == kv.gid
+}
+
+func (kv *ShardKV) isReconfiguring() bool {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	return len(kv.configs) > 1
 }
 
 func (kv *ShardKV) startAndWaitForOp(op Op) Err {
@@ -537,18 +556,18 @@ func (kv *ShardKV) sendReconfigInfoNL(config shardctrler.Config, argsForGroup ma
 
 	for !kv.killed() {
 		ch := make(chan int)
-		for shard, args := range argsForGroup {
-			if servers, ok := config.Groups[config.Shards[shard]]; ok {
+		for _, args := range argsForGroup {
+			if servers, ok := config.Groups[config.Shards[args.Shard]]; ok {
 				for si := 0; si < len(servers); si++ {
 					srv := kv.make_end(servers[si])
-					go func(shard int, args MoveShardsArgs) {
+					go func(args MoveShardsArgs) {
 						var reply MoveShardsReply
 						ok := srv.Call("ShardKV.MoveShards", &args, &reply)
 						if ok {
 							kv.dealWithMakeMoveShardReply(reply)
-							ch <- shard
+							ch <- args.Shard
 						}
-					}(shard, args)
+					}(args)
 				}
 			}
 		}
@@ -587,6 +606,7 @@ func (kv *ShardKV) dealWithMakeMoveShardReply(reply MoveShardsReply) {
 	if !reply.Succeed {
 		return
 	}
+
 }
 
 //
