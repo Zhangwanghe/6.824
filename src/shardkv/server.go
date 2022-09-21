@@ -309,13 +309,14 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 	op, ok := command.(Op)
 	if ok && op.OpType != "" {
 		if op.OpType == "Reconfig" {
+			DPrintf(kv.gid, kv.me, "append config is %d\n", op.Config)
 			kv.configs = append(kv.configs, op.Config)
 		} else if op.OpType == "MoveShards" {
 			kv.moveShardsNL(op.Shard, op.MoveShardReply)
 		}
 
 		if ok, _ = kv.hasExecutedNL(op.Client, op.SerialNumber, op.Key); ok {
-			DPrintf(kv.gid, kv.me, "has dealt %d", op.SerialNumber)
+			DPrintf(kv.gid, kv.me, "has dealt %d\n", op.SerialNumber)
 			return
 		}
 
@@ -335,6 +336,7 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 }
 
 func (kv *ShardKV) moveShardsNL(shard int, reply MoveShardsReply) {
+	DPrintf(kv.gid, kv.me, "moveShardsNL %+v with reply %+v\n", shard, reply)
 	for k, v := range reply.KeyValue {
 		kv.PutValNL(k, v)
 	}
@@ -453,14 +455,14 @@ func (kv *ShardKV) checkConfig() {
 			if len(kv.configs) > 0 {
 				oldNumber = kv.configs[len(kv.configs)-1].Num
 			}
-
-			config := kv.sm.Query(-1)
-			if oldNumber != config.Num {
-				kv.rf.Start(kv.makeReconfigOpNL(config))
-			}
 			kv.mu.Unlock()
 
-			kv.waitForConfigNumber(oldNumber)
+			config := kv.sm.Query(-1)
+			for i := oldNumber + 1; i <= config.Num; i++ {
+				kv.rf.Start(kv.makeReconfigOpNL(kv.sm.Query(i)))
+			}
+
+			kv.waitForConfigNumber(config.Num)
 		}
 
 		time.Sleep(100 * time.Millisecond)
@@ -486,13 +488,13 @@ func (kv *ShardKV) makeReconfigOpNL(config shardctrler.Config) Op {
 	return op
 }
 
-func (kv *ShardKV) waitForConfigNumber(oldConfigNumber int) {
+func (kv *ShardKV) waitForConfigNumber(number int) {
 	for {
 		kv.mu.Lock()
 		newConfigNumber := kv.configs[len(kv.configs)-1].Num
 		kv.mu.Unlock()
 
-		if oldConfigNumber != newConfigNumber {
+		if number == newConfigNumber {
 			break
 		}
 
@@ -502,7 +504,7 @@ func (kv *ShardKV) waitForConfigNumber(oldConfigNumber int) {
 
 func (kv *ShardKV) checkConfigDiff() {
 	for !kv.killed() {
-		if kv.isLeader() && !kv.hasFinishedOneReconfig() {
+		if kv.isLeader() && kv.hasFinishedOneReconfig() {
 			if ok, oldConfig, newConifg := kv.getReconfigData(); ok {
 				kv.reconfig(oldConfig, newConifg)
 			}
@@ -516,7 +518,7 @@ func (kv *ShardKV) hasFinishedOneReconfig() bool {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	return kv.hasFinishedOneReconfig()
+	return kv.hasFinishedOneReconfigNL()
 }
 
 func (kv *ShardKV) hasFinishedOneReconfigNL() bool {
@@ -532,6 +534,24 @@ func (kv *ShardKV) getReconfigData() (bool, shardctrler.Config, shardctrler.Conf
 	}
 
 	return true, kv.configs[0], kv.configs[1]
+}
+
+func (kv *ShardKV) reconfig(oldConfig shardctrler.Config, newConfig shardctrler.Config) {
+	DPrintf(kv.gid, kv.me, "new config is %+v", newConfig)
+
+	argsForGroup := make(map[int]MoveShardsArgs)
+	for i := 0; i < shardctrler.NShards; i++ {
+		if kv.gid == oldConfig.Shards[i] && kv.gid != newConfig.Shards[i] {
+			// group change to config.Shards[i]
+			args := kv.makeMoveShardArgs(oldConfig.Num, i)
+			kv.addWaitForMovingShardsReply(i)
+			argsForGroup[i] = args
+		} else if kv.gid != oldConfig.Shards[i] && kv.gid == newConfig.Shards[i] {
+			kv.addWaitForMovingShardsRequest(i)
+		}
+	}
+
+	kv.sendReconfigInfoNL(oldConfig, argsForGroup)
 }
 
 type MoveShardsArgs struct {
@@ -578,7 +598,7 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 		}
 	}
 
-	delete(kv.waitForMovingShardsReply, args.Shard)
+	delete(kv.waitForMovingShardsRequest, args.Shard)
 	kv.removeOldConfigNL()
 
 	DPrintf(kv.gid, kv.me, "MoveShards reply is %+v\n", reply)
@@ -598,23 +618,6 @@ func (kv *ShardKV) hasConvertedToConfigNL(configNumber int) bool {
 	return len(kv.configs) > 0 && kv.configs[0].Num >= configNumber
 }
 
-func (kv *ShardKV) reconfig(oldConfig shardctrler.Config, newConfig shardctrler.Config) {
-	DPrintf(kv.gid, kv.me, "new config is %+v", newConfig)
-
-	argsForGroup := make(map[int]MoveShardsArgs)
-	for i := 0; i < shardctrler.NShards; i++ {
-		if kv.gid == oldConfig.Shards[i] && kv.gid != newConfig.Shards[i] {
-			// group change to config.Shards[i]
-			args := kv.makeMoveShardArgs(oldConfig.Num, i)
-			argsForGroup[i] = args
-		} else if kv.gid != oldConfig.Shards[i] && kv.gid == newConfig.Shards[i] {
-			kv.addWaitForMovingShards(i)
-		}
-	}
-
-	kv.sendReconfigInfoNL(oldConfig, argsForGroup)
-}
-
 func (kv *ShardKV) makeMoveShardArgs(configNumber int, shard int) MoveShardsArgs {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
@@ -625,11 +628,18 @@ func (kv *ShardKV) makeMoveShardArgs(configNumber int, shard int) MoveShardsArgs
 	return args
 }
 
-func (kv *ShardKV) addWaitForMovingShards(shard int) {
+func (kv *ShardKV) addWaitForMovingShardsRequest(shard int) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
 	kv.waitForMovingShardsRequest[shard] = 1
+}
+
+func (kv *ShardKV) addWaitForMovingShardsReply(shard int) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	kv.waitForMovingShardsReply[shard] = 1
 }
 
 func (kv *ShardKV) sendReconfigInfoNL(config shardctrler.Config, argsForGroup map[int]MoveShardsArgs) {
@@ -648,7 +658,7 @@ func (kv *ShardKV) sendReconfigInfoNL(config shardctrler.Config, argsForGroup ma
 						ok := srv.Call("ShardKV.MoveShards", &args, &reply)
 						DPrintf(kv.gid, kv.me, "sendReconfigInfoNL reply is %+v\n", reply)
 						if ok && reply.Succeed {
-							kv.dealWithMoveShardReply(args.Shard, reply)
+							kv.rf.Start(kv.makeMoveShardsOp(args.Shard, reply))
 							ch <- args.Shard
 						}
 					}(args)
@@ -672,15 +682,7 @@ func (kv *ShardKV) sendReconfigInfoNL(config shardctrler.Config, argsForGroup ma
 	}
 }
 
-func (kv *ShardKV) dealWithMoveShardReply(shard int, reply MoveShardsReply) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
-	kv.waitForMovingShardsReply[shard] = 1
-	kv.rf.Start(kv.makeMoveShardsOpNL(shard, reply))
-}
-
-func (kv *ShardKV) makeMoveShardsOpNL(shard int, reply MoveShardsReply) Op {
+func (kv *ShardKV) makeMoveShardsOp(shard int, reply MoveShardsReply) Op {
 	op := Op{}
 	op.OpType = "MoveShards"
 	op.MoveShardReply = reply
