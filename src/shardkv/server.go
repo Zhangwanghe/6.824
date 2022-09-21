@@ -313,6 +313,8 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 			kv.configs = append(kv.configs, op.Config)
 		} else if op.OpType == "MoveShards" {
 			kv.moveShardsNL(op.Shard, op.MoveShardReply)
+		} else if op.OpType == "RemoveOldConfig" {
+			kv.removeOldConfigNL()
 		}
 
 		if ok, _ = kv.hasExecutedNL(op.Client, op.SerialNumber, op.Key); ok {
@@ -349,7 +351,7 @@ func (kv *ShardKV) moveShardsNL(shard int, reply MoveShardsReply) {
 	}
 
 	delete(kv.waitForMovingShardsReply, shard)
-	kv.removeOldConfigNL()
+	kv.syncronizeRemoveOldConfig()
 }
 
 func (kv *ShardKV) PutValNL(key string, val string) {
@@ -364,6 +366,20 @@ func (kv *ShardKV) AppendValNL(key string, val string) {
 	}
 
 	kv.KeyValues[key] += val
+}
+
+func (kv *ShardKV) removeOldConfigNL() {
+	// todo check oldconfig number
+	if !kv.hasFinishedOneReconfigNL() {
+		return
+	}
+
+	if len(kv.configs) == 0 {
+		return
+	}
+
+	DPrintf(kv.gid, kv.me, "remove config %+v\n", kv.configs[0])
+	kv.configs = kv.configs[1:]
 }
 
 func (kv *ShardKV) dealWithSnapShotNL(snapshot []byte, snapshotIndex int) {
@@ -550,7 +566,7 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 	}
 
 	delete(kv.waitForMovingShardsRequest, args.Shard)
-	kv.removeOldConfigNL()
+	kv.syncronizeRemoveOldConfig()
 
 	DPrintf(kv.gid, kv.me, "MoveShards reply is %+v\n", reply)
 }
@@ -559,18 +575,10 @@ func (kv *ShardKV) hasConvertedToConfigNL(configNumber int) bool {
 	return len(kv.configs) > 1 && kv.configs[0].Num >= configNumber
 }
 
-func (kv *ShardKV) removeOldConfigNL() {
-	// todo check oldconfig number
-	if !kv.hasFinishedOneReconfigNL() {
-		return
-	}
-
-	if len(kv.configs) == 0 {
-		return
-	}
-
-	DPrintf(kv.gid, kv.me, "remove config %+v\n", kv.configs[0])
-	kv.configs = kv.configs[1:]
+func (kv *ShardKV) syncronizeRemoveOldConfig() {
+	var op Op
+	op.OpType = "RemoveOldConfig"
+	kv.rf.Start(op)
 }
 
 func (kv *ShardKV) checkConfigDiff() {
@@ -580,7 +588,7 @@ func (kv *ShardKV) checkConfigDiff() {
 				kv.reconfig(oldConfig, newConifg)
 				// nothing changes
 				if kv.hasFinishedOneReconfig() {
-					kv.removeOldConfig()
+					kv.syncronizeRemoveOldConfig()
 				}
 			}
 		}
@@ -598,13 +606,6 @@ func (kv *ShardKV) hasFinishedOneReconfig() bool {
 
 func (kv *ShardKV) hasFinishedOneReconfigNL() bool {
 	return len(kv.waitForMovingShardsReply) == 0 && len(kv.waitForMovingShardsRequest) == 0
-}
-
-func (kv *ShardKV) removeOldConfig() {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
-	kv.removeOldConfigNL()
 }
 
 func (kv *ShardKV) getReconfigData() (bool, shardctrler.Config, shardctrler.Config) {
