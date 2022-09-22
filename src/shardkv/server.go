@@ -32,15 +32,11 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	OpType           string
-	Key              string
-	Value            string
-	Client           int64
-	SerialNumber     int
-	Config           shardctrler.Config
-	Shard            int
-	MoveShardReply   MoveShardsReply
-	LastConfigNumber int
+	OpType       string
+	Key          string
+	Value        string
+	Client       int64
+	SerialNumber int
 }
 
 type Ctrl struct {
@@ -105,11 +101,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
-	var op Op
-	op.OpType = "Get"
-	op.Key = args.Key
-	op.Client = args.Client
-	op.SerialNumber = args.SerialNumber
+	op := Op{"Get", args.Key, "", args.Client, args.SerialNumber}
 
 	err := kv.startAndWaitForOp(op)
 	if err != OK {
@@ -163,12 +155,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
-	var op Op
-	op.OpType = args.Op
-	op.Key = args.Key
-	op.Value = args.Value
-	op.Client = args.Client
-	op.SerialNumber = args.SerialNumber
+	op := Op{args.Op, args.Key, args.Value, args.Client, args.SerialNumber}
 
 	err := kv.startAndWaitForOp(op)
 	if err != OK {
