@@ -15,7 +15,7 @@ import (
 	"6.824/shardctrler"
 )
 
-const Debug = true
+const Debug = false
 
 func DPrintf(group int, index int, format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -97,7 +97,12 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
-	op := Op{"Get", args.Key, "", args.Client, args.SerialNumber, shardctrler.Config{}, 0, MoveShardsReply{}}
+	var op Op
+	op.OpType = "Get"
+	op.Key = args.Key
+	op.Client = args.Client
+	op.SerialNumber = args.SerialNumber
+
 	err := kv.startAndWaitForOp(op)
 	if err != OK {
 		reply.Err = err
@@ -150,7 +155,13 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
-	op := Op{args.Op, args.Key, args.Value, args.Client, args.SerialNumber, shardctrler.Config{}, 0, MoveShardsReply{}}
+	var op Op
+	op.OpType = "Get"
+	op.Key = args.Key
+	op.Value = args.Value
+	op.Client = args.Client
+	op.SerialNumber = args.SerialNumber
+
 	err := kv.startAndWaitForOp(op)
 	if err != OK {
 		reply.Err = err
@@ -352,7 +363,7 @@ func (kv *ShardKV) moveShardsNL(shard int, configNumber int, reply MoveShardsRep
 	}
 
 	delete(kv.waitForMovingShardsReply, shard)
-	kv.syncronizeRemoveOldConfig(configNumber)
+	kv.syncronizeRemoveOldConfigNL(configNumber)
 }
 
 func (kv *ShardKV) PutValNL(key string, val string) {
@@ -558,7 +569,7 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 	}
 
 	delete(kv.waitForMovingShardsRequest, args.Shard)
-	kv.syncronizeRemoveOldConfig(args.LastConfigNumber)
+	kv.syncronizeRemoveOldConfigNL(args.LastConfigNumber)
 
 	DPrintf(kv.gid, kv.me, "MoveShards reply is %+v\n", reply)
 }
@@ -568,6 +579,13 @@ func (kv *ShardKV) hasConvertedToConfigNL(configNumber int) bool {
 }
 
 func (kv *ShardKV) syncronizeRemoveOldConfig(configNumber int) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	kv.syncronizeRemoveOldConfigNL(configNumber)
+}
+
+func (kv *ShardKV) syncronizeRemoveOldConfigNL(configNumber int) {
 	if !kv.hasFinishedOneReconfigNL() {
 		return
 	}
@@ -581,6 +599,25 @@ func (kv *ShardKV) syncronizeRemoveOldConfig(configNumber int) {
 	var op Op
 	op.OpType = "RemoveOldConfig"
 	kv.rf.Start(op)
+
+	kv.waitForRemovingOldConfigNL(configNumber)
+}
+
+func (kv *ShardKV) waitForRemovingOldConfigNL(number int) {
+	for {
+		kv.mu.Lock()
+		newConfigNumber := 0
+		if len(kv.configs) > 0 {
+			newConfigNumber = kv.configs[len(kv.configs)-1].Num
+		}
+		kv.mu.Unlock()
+
+		if number != newConfigNumber {
+			break
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func (kv *ShardKV) checkConfigDiff() {
