@@ -363,7 +363,7 @@ func (kv *ShardKV) moveShardsNL(shard int, configNumber int, reply MoveShardsRep
 	delete(kv.waitForMovingShardsReply, shard)
 
 	if kv.isLeader() && kv.hasFinishedOneReconfigNL() {
-		go kv.synchronizeRemoveOldConfig(configNumber)
+		go kv.startRemoveOldConfig(configNumber)
 	}
 }
 
@@ -432,6 +432,9 @@ func (kv *ShardKV) makeSnapshot() {
 	e.Encode(kv.ClientKeySerialNumber)
 	e.Encode(kv.CommitIndex)
 	e.Encode(kv.KeyValues)
+	e.Encode(kv.configs)
+	e.Encode(kv.waitForMovingShardsRequest)
+	e.Encode(kv.waitForMovingShardsReply)
 	DPrintf(kv.gid, kv.me, "make snapshot from %d", kv.CommitIndex)
 	kv.rf.Snapshot(kv.CommitIndex, w.Bytes())
 }
@@ -448,11 +451,17 @@ func (kv *ShardKV) readSnapShotNL(data []byte) {
 	var clientKeySerialNumber map[int64]map[string]int
 	var commitIndex int
 	var keyValues map[string]string
+	var configs []shardctrler.Config
+	var waitForMovingShardsRequest map[int]int
+	var waitForMovingShardsReply map[int]int
 	if d.Decode(&appliedlogs) != nil ||
 		d.Decode(&requiredlogs) != nil ||
 		d.Decode(&clientKeySerialNumber) != nil ||
 		d.Decode(&commitIndex) != nil ||
-		d.Decode(&keyValues) != nil {
+		d.Decode(&keyValues) != nil ||
+		d.Decode(&configs) != nil ||
+		d.Decode(&waitForMovingShardsRequest) != nil ||
+		d.Decode(&waitForMovingShardsReply) != nil {
 		return
 	} else {
 		kv.Appliedlogs = appliedlogs
@@ -460,6 +469,9 @@ func (kv *ShardKV) readSnapShotNL(data []byte) {
 		kv.ClientKeySerialNumber = clientKeySerialNumber
 		kv.CommitIndex = commitIndex
 		kv.KeyValues = keyValues
+		kv.configs = configs
+		kv.waitForMovingShardsRequest = waitForMovingShardsRequest
+		kv.waitForMovingShardsReply = waitForMovingShardsReply
 	}
 }
 
@@ -474,25 +486,30 @@ func (kv *ShardKV) restoreFromSnapshot() {
 func (kv *ShardKV) checkConfig() {
 	for !kv.killed() {
 		if kv.isLeader() {
-			kv.mu.Lock()
-			oldNumber := 0
-			if len(kv.configs) > 0 {
-				oldNumber = kv.configs[len(kv.configs)-1].Num
-			}
-			kv.mu.Unlock()
-
+			latestConfigNumber := kv.getLatestConfigNumber()
 			config := kv.sm.Query(-1)
-			for i := oldNumber + 1; i <= config.Num; i++ {
+			for i := latestConfigNumber + 1; i <= config.Num; i++ {
 				kv.rf.Start(kv.makeReconfigCtrlNL(kv.sm.Query(i)))
 			}
 
-			if config.Num > oldNumber {
-				kv.waitForConfigNumber(config.Num)
+			if config.Num > latestConfigNumber {
+				kv.waitForAppendingConfigNumber(config.Num)
 			}
 		}
 
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func (kv *ShardKV) getLatestConfigNumber() int {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	if len(kv.configs) > 0 {
+		return kv.configs[len(kv.configs)-1].Num
+	}
+
+	return 0
 }
 
 func (kv *ShardKV) makeReconfigCtrlNL(config shardctrler.Config) Ctrl {
@@ -514,18 +531,13 @@ func (kv *ShardKV) makeReconfigCtrlNL(config shardctrler.Config) Ctrl {
 	return ctrl
 }
 
-func (kv *ShardKV) waitForConfigNumber(number int) {
+func (kv *ShardKV) waitForAppendingConfigNumber(number int) {
 	DPrintf(kv.gid, kv.me, "wait for config %d to be appended\n", number)
 
 	for {
-		kv.mu.Lock()
-		newConfigNumber := 0
-		if len(kv.configs) > 0 {
-			newConfigNumber = kv.configs[len(kv.configs)-1].Num
-		}
-		kv.mu.Unlock()
+		latestConfigNumber := kv.getLatestConfigNumber()
 
-		if number == newConfigNumber {
+		if number == latestConfigNumber {
 			break
 		}
 
@@ -550,7 +562,7 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 
 	DPrintf(kv.gid, kv.me, "MoveShards args is %+v\n", args)
 	// todo when having partition, how to ensure we are contacting correct leader?
-	if !kv.isLeader() || !kv.waitForShardRequestNL(args.Shard, args.LastConfigNumber) {
+	if !kv.isLeader() || !kv.isWaitingForShardRequestNL(args.Shard, args.LastConfigNumber) {
 		reply.Succeed = false
 		return
 	}
@@ -579,31 +591,29 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 
 	delete(kv.waitForMovingShardsRequest, args.Shard)
 	if kv.hasFinishedOneReconfigNL() {
-		go kv.synchronizeRemoveOldConfig(args.LastConfigNumber)
+		go kv.startRemoveOldConfig(args.LastConfigNumber)
 	}
 
 	DPrintf(kv.gid, kv.me, "MoveShards reply is %+v\n", reply)
 }
 
-func (kv *ShardKV) waitForShardRequestNL(shard int, configNumber int) bool {
+func (kv *ShardKV) isWaitingForShardRequestNL(shard int, configNumber int) bool {
 	// when partition we should response for duplicated requests
 	_, ok := kv.waitForMovingShardsRequest[shard]
 	return (len(kv.configs) > 0 && kv.configs[0].Num > configNumber) || ok
 }
 
-func (kv *ShardKV) synchronizeRemoveOldConfig(configNumber int) {
+func (kv *ShardKV) startRemoveOldConfig(configNumber int) {
 	if kv.isRemoved(configNumber) {
 		return
 	}
 
-	DPrintf(kv.gid, kv.me, "synchronizeRemoveOldConfig %+v\n", configNumber)
+	DPrintf(kv.gid, kv.me, "startRemoveOldConfig %+v\n", configNumber)
 
 	var ctrl Ctrl
 	ctrl.CtrlType = "RemoveOldConfig"
 	ctrl.LastConfigNumber = configNumber
 	kv.rf.Start(ctrl)
-
-	kv.waitForRemovingOldConfig(configNumber)
 }
 
 func (kv *ShardKV) isRemoved(configNumber int) bool {
@@ -613,36 +623,18 @@ func (kv *ShardKV) isRemoved(configNumber int) bool {
 	return len(kv.configs) > 0 && kv.configs[0].Num != configNumber
 }
 
-func (kv *ShardKV) waitForRemovingOldConfig(number int) {
-	for {
-		kv.mu.Lock()
-		newConfigNumber := 0
-		if len(kv.configs) > 0 {
-			newConfigNumber = kv.configs[0].Num
-		}
-		kv.mu.Unlock()
-
-		if number != newConfigNumber {
-			break
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
 func (kv *ShardKV) checkConfigDiff() {
 	for !kv.killed() {
 		if kv.isLeader() && kv.hasFinishedOneReconfig() {
 			if ok, oldConfig, newConifg := kv.getReconfigData(); ok {
 				kv.reconfig(oldConfig, newConifg)
-				// nothing changes
-				// todo add flag for leader waiting for commit
-				if kv.hasFinishedOneReconfig() {
-					kv.synchronizeRemoveOldConfig(oldConfig.Num)
-				} else {
-					kv.waitForRemovingOldConfig(oldConfig.Num)
-				}
 
+				if kv.hasFinishedOneReconfig() {
+					kv.startRemoveOldConfig(oldConfig.Num)
+				}
+				kv.waitForRemovingOldConfig(oldConfig.Num)
+
+				DPrintf(kv.gid, kv.me, "finish reconfig for %+v\n", oldConfig.Num)
 			}
 		}
 
@@ -670,6 +662,23 @@ func (kv *ShardKV) getReconfigData() (bool, shardctrler.Config, shardctrler.Conf
 	}
 
 	return true, kv.configs[0], kv.configs[1]
+}
+
+func (kv *ShardKV) waitForRemovingOldConfig(number int) {
+	for {
+		kv.mu.Lock()
+		newConfigNumber := 0
+		if len(kv.configs) > 0 {
+			newConfigNumber = kv.configs[0].Num
+		}
+		kv.mu.Unlock()
+
+		if number != newConfigNumber {
+			break
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func (kv *ShardKV) reconfig(oldConfig shardctrler.Config, newConfig shardctrler.Config) {
