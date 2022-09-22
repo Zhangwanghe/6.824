@@ -43,6 +43,14 @@ type Op struct {
 	LastConfigNumber int
 }
 
+type Ctrl struct {
+	CtrlType         string
+	Config           shardctrler.Config
+	Shard            int
+	MoveShardReply   MoveShardsReply
+	LastConfigNumber int
+}
+
 type ShardKV struct {
 	mu           sync.Mutex
 	me           int
@@ -320,15 +328,6 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 	// persist putandappend result
 	op, ok := command.(Op)
 	if ok && op.OpType != "" {
-		if op.OpType == "Reconfig" {
-			DPrintf(kv.gid, kv.me, "append config is %d\n", op.Config)
-			kv.configs = append(kv.configs, op.Config)
-		} else if op.OpType == "MoveShards" {
-			kv.moveShardsNL(op.Shard, op.LastConfigNumber, op.MoveShardReply)
-		} else if op.OpType == "RemoveOldConfig" {
-			kv.removeOldConfigNL(op.LastConfigNumber)
-		}
-
 		if ok, _ = kv.hasExecutedNL(op.Client, op.SerialNumber, op.Key); ok {
 			DPrintf(kv.gid, kv.me, "has dealt %d\n", op.SerialNumber)
 			return
@@ -346,6 +345,18 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 		}
 
 		kv.ClientKeySerialNumber[op.Client][op.Key] = op.SerialNumber
+	}
+
+	ctrl, ok := command.(Ctrl)
+	if ok {
+		if ctrl.CtrlType == "Reconfig" {
+			DPrintf(kv.gid, kv.me, "append config is %d\n", ctrl.Config)
+			kv.configs = append(kv.configs, ctrl.Config)
+		} else if ctrl.CtrlType == "MoveShards" {
+			kv.moveShardsNL(ctrl.Shard, ctrl.LastConfigNumber, ctrl.MoveShardReply)
+		} else if ctrl.CtrlType == "RemoveOldConfig" {
+			kv.removeOldConfigNL(ctrl.LastConfigNumber)
+		}
 	}
 }
 
@@ -485,7 +496,7 @@ func (kv *ShardKV) checkConfig() {
 
 			config := kv.sm.Query(-1)
 			for i := oldNumber + 1; i <= config.Num; i++ {
-				kv.rf.Start(kv.makeReconfigOpNL(kv.sm.Query(i)))
+				kv.rf.Start(kv.makeReconfigCtrlNL(kv.sm.Query(i)))
 			}
 
 			if config.Num > oldNumber {
@@ -497,23 +508,23 @@ func (kv *ShardKV) checkConfig() {
 	}
 }
 
-func (kv *ShardKV) makeReconfigOpNL(config shardctrler.Config) Op {
-	op := Op{}
-	op.OpType = "Reconfig"
+func (kv *ShardKV) makeReconfigCtrlNL(config shardctrler.Config) Ctrl {
+	ctrl := Ctrl{}
+	ctrl.CtrlType = "Reconfig"
 
-	op.Config = shardctrler.Config{}
-	op.Config.Num = config.Num
+	ctrl.Config = shardctrler.Config{}
+	ctrl.Config.Num = config.Num
 	for i := 0; i < shardctrler.NShards; i++ {
-		op.Config.Shards[i] = config.Shards[i]
+		ctrl.Config.Shards[i] = config.Shards[i]
 	}
 
-	op.Config.Groups = make(map[int][]string)
+	ctrl.Config.Groups = make(map[int][]string)
 	for k, v := range config.Groups {
-		op.Config.Groups[k] = make([]string, len(v))
-		copy(op.Config.Groups[k], v)
+		ctrl.Config.Groups[k] = make([]string, len(v))
+		copy(ctrl.Config.Groups[k], v)
 	}
 
-	return op
+	return ctrl
 }
 
 func (kv *ShardKV) waitForConfigNumber(number int) {
@@ -605,12 +616,12 @@ func (kv *ShardKV) synchronizeRemoveOldConfig(configNumber int) {
 		return
 	}
 
-	DPrintf(kv.gid, kv.me, "syncronizeRemoveOldConfig %+v\n", kv.configs[0].Num)
+	DPrintf(kv.gid, kv.me, "syncronizeRemoveOldConfig %+v\n", configNumber)
 
-	var op Op
-	op.OpType = "RemoveOldConfig"
-	op.LastConfigNumber = configNumber
-	kv.rf.Start(op)
+	var ctrl Ctrl
+	ctrl.CtrlType = "RemoveOldConfig"
+	ctrl.LastConfigNumber = configNumber
+	kv.rf.Start(ctrl)
 
 	kv.waitForRemovingOldConfig(configNumber)
 }
@@ -728,7 +739,7 @@ func (kv *ShardKV) sendReconfigInfoNL(config shardctrler.Config, argsForGroup ma
 						ok := srv.Call("ShardKV.MoveShards", &args, &reply)
 						DPrintf(kv.gid, kv.me, "sendReconfigInfoNL args is %+v reply is %+v \n", args, reply)
 						if ok && reply.Succeed {
-							kv.rf.Start(kv.makeMoveShardsOp(args, reply))
+							kv.rf.Start(kv.makeMoveShardsCtrl(args, reply))
 							ch <- args.Shard
 						}
 					}(args)
@@ -752,14 +763,14 @@ func (kv *ShardKV) sendReconfigInfoNL(config shardctrler.Config, argsForGroup ma
 	}
 }
 
-func (kv *ShardKV) makeMoveShardsOp(args MoveShardsArgs, reply MoveShardsReply) Op {
-	op := Op{}
-	op.OpType = "MoveShards"
-	op.MoveShardReply = reply
-	op.Shard = args.Shard
-	op.LastConfigNumber = args.LastConfigNumber
+func (kv *ShardKV) makeMoveShardsCtrl(args MoveShardsArgs, reply MoveShardsReply) Ctrl {
+	ctrl := Ctrl{}
+	ctrl.CtrlType = "MoveShards"
+	ctrl.MoveShardReply = reply
+	ctrl.Shard = args.Shard
+	ctrl.LastConfigNumber = args.LastConfigNumber
 
-	return op
+	return ctrl
 }
 
 //
@@ -811,6 +822,7 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	// call labgob.Register on structures you want
 	// Go's RPC library to marshall/unmarshall.
 	labgob.Register(Op{})
+	labgob.Register(Ctrl{})
 	labgob.Register(MoveShardsReply{})
 
 	kv := new(ShardKV)
