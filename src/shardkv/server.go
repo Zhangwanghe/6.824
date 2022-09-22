@@ -15,7 +15,7 @@ import (
 	"6.824/shardctrler"
 )
 
-const Debug = false
+const Debug = true
 
 func DPrintf(group int, index int, format string, a ...interface{}) (n int, err error) {
 	if Debug {
@@ -32,14 +32,15 @@ type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	OpType         string
-	Key            string
-	Value          string
-	Client         int64
-	SerialNumber   int
-	Config         shardctrler.Config
-	Shard          int
-	MoveShardReply MoveShardsReply
+	OpType           string
+	Key              string
+	Value            string
+	Client           int64
+	SerialNumber     int
+	Config           shardctrler.Config
+	Shard            int
+	MoveShardReply   MoveShardsReply
+	LastConfigNumber int
 }
 
 type ShardKV struct {
@@ -312,7 +313,7 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 			DPrintf(kv.gid, kv.me, "append config is %d\n", op.Config)
 			kv.configs = append(kv.configs, op.Config)
 		} else if op.OpType == "MoveShards" {
-			kv.moveShardsNL(op.Shard, op.MoveShardReply)
+			kv.moveShardsNL(op.Shard, op.LastConfigNumber, op.MoveShardReply)
 		} else if op.OpType == "RemoveOldConfig" {
 			kv.removeOldConfigNL()
 		}
@@ -337,7 +338,7 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 	}
 }
 
-func (kv *ShardKV) moveShardsNL(shard int, reply MoveShardsReply) {
+func (kv *ShardKV) moveShardsNL(shard int, configNumber int, reply MoveShardsReply) {
 	DPrintf(kv.gid, kv.me, "moveShardsNL %+v with reply %+v\n", shard, reply)
 	for k, v := range reply.KeyValue {
 		kv.PutValNL(k, v)
@@ -351,7 +352,7 @@ func (kv *ShardKV) moveShardsNL(shard int, reply MoveShardsReply) {
 	}
 
 	delete(kv.waitForMovingShardsReply, shard)
-	kv.syncronizeRemoveOldConfig()
+	kv.syncronizeRemoveOldConfig(configNumber)
 }
 
 func (kv *ShardKV) PutValNL(key string, val string) {
@@ -369,15 +370,6 @@ func (kv *ShardKV) AppendValNL(key string, val string) {
 }
 
 func (kv *ShardKV) removeOldConfigNL() {
-	// todo check oldconfig number
-	if !kv.hasFinishedOneReconfigNL() {
-		return
-	}
-
-	if len(kv.configs) == 0 {
-		return
-	}
-
 	DPrintf(kv.gid, kv.me, "remove config %+v\n", kv.configs[0])
 	kv.configs = kv.configs[1:]
 }
@@ -566,7 +558,7 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 	}
 
 	delete(kv.waitForMovingShardsRequest, args.Shard)
-	kv.syncronizeRemoveOldConfig()
+	kv.syncronizeRemoveOldConfig(args.LastConfigNumber)
 
 	DPrintf(kv.gid, kv.me, "MoveShards reply is %+v\n", reply)
 }
@@ -575,7 +567,17 @@ func (kv *ShardKV) hasConvertedToConfigNL(configNumber int) bool {
 	return len(kv.configs) > 1 && kv.configs[0].Num >= configNumber
 }
 
-func (kv *ShardKV) syncronizeRemoveOldConfig() {
+func (kv *ShardKV) syncronizeRemoveOldConfig(configNumber int) {
+	if !kv.hasFinishedOneReconfigNL() {
+		return
+	}
+
+	if len(kv.configs) == 0 || kv.configs[0].Num != configNumber {
+		return
+	}
+
+	DPrintf(kv.gid, kv.me, "syncronizeRemoveOldConfig %+v\n", kv.configs[0].Num)
+
 	var op Op
 	op.OpType = "RemoveOldConfig"
 	kv.rf.Start(op)
@@ -587,8 +589,9 @@ func (kv *ShardKV) checkConfigDiff() {
 			if ok, oldConfig, newConifg := kv.getReconfigData(); ok {
 				kv.reconfig(oldConfig, newConifg)
 				// nothing changes
+				// todo add flag for leader waiting for commit
 				if kv.hasFinishedOneReconfig() {
-					kv.syncronizeRemoveOldConfig()
+					kv.syncronizeRemoveOldConfig(oldConfig.Num)
 				}
 			}
 		}
@@ -676,7 +679,7 @@ func (kv *ShardKV) sendReconfigInfoNL(config shardctrler.Config, argsForGroup ma
 						ok := srv.Call("ShardKV.MoveShards", &args, &reply)
 						DPrintf(kv.gid, kv.me, "sendReconfigInfoNL reply is %+v\n", reply)
 						if ok && reply.Succeed {
-							kv.rf.Start(kv.makeMoveShardsOp(args.Shard, reply))
+							kv.rf.Start(kv.makeMoveShardsOp(args, reply))
 							ch <- args.Shard
 						}
 					}(args)
@@ -700,11 +703,12 @@ func (kv *ShardKV) sendReconfigInfoNL(config shardctrler.Config, argsForGroup ma
 	}
 }
 
-func (kv *ShardKV) makeMoveShardsOp(shard int, reply MoveShardsReply) Op {
+func (kv *ShardKV) makeMoveShardsOp(args MoveShardsArgs, reply MoveShardsReply) Op {
 	op := Op{}
 	op.OpType = "MoveShards"
 	op.MoveShardReply = reply
-	op.Shard = shard
+	op.Shard = args.Shard
+	op.LastConfigNumber = args.LastConfigNumber
 
 	return op
 }
