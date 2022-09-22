@@ -583,13 +583,6 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 	DPrintf(kv.gid, kv.me, "MoveShards reply is %+v\n", reply)
 }
 
-func (kv *ShardKV) hasConvertedToConfig(configNumber int) bool {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
-	return kv.hasConvertedToConfigNL(configNumber)
-}
-
 func (kv *ShardKV) hasConvertedToConfigNL(configNumber int) bool {
 	return len(kv.configs) > 0 && kv.configs[0].Num >= configNumber
 }
@@ -599,11 +592,11 @@ func (kv *ShardKV) synchronizeRemoveOldConfig(configNumber int) {
 		return
 	}
 
-	if !kv.hasConvertedToConfig(configNumber) {
+	if !kv.isRemoved(configNumber) {
 		return
 	}
 
-	DPrintf(kv.gid, kv.me, "syncronizeRemoveOldConfig %+v\n", configNumber)
+	DPrintf(kv.gid, kv.me, "synchronizeRemoveOldConfig %+v\n", configNumber)
 
 	var ctrl Ctrl
 	ctrl.CtrlType = "RemoveOldConfig"
@@ -611,6 +604,13 @@ func (kv *ShardKV) synchronizeRemoveOldConfig(configNumber int) {
 	kv.rf.Start(ctrl)
 
 	kv.waitForRemovingOldConfig(configNumber)
+}
+
+func (kv *ShardKV) isRemoved(configNumber int) bool {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	return len(kv.configs) > 0 && kv.configs[0].Num != configNumber
 }
 
 func (kv *ShardKV) waitForRemovingOldConfig(number int) {
