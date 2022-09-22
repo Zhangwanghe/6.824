@@ -362,7 +362,7 @@ func (kv *ShardKV) moveShardsNL(shard int, configNumber int, reply MoveShardsRep
 
 	delete(kv.waitForMovingShardsReply, shard)
 
-	if kv.isLeader() {
+	if kv.isLeader() && kv.hasFinishedOneReconfigNL() {
 		go kv.synchronizeRemoveOldConfig(configNumber)
 	}
 }
@@ -550,7 +550,7 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 
 	DPrintf(kv.gid, kv.me, "MoveShards args is %+v\n", args)
 	// todo when having partition, how to ensure we are contacting correct leader?
-	if !kv.isLeader() || !kv.hasConvertedToConfigNL(args.LastConfigNumber) {
+	if !kv.isLeader() || !kv.waitForShardRequestNL(args.Shard, args.LastConfigNumber) {
 		reply.Succeed = false
 		return
 	}
@@ -578,20 +578,20 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 	}
 
 	delete(kv.waitForMovingShardsRequest, args.Shard)
-	go kv.synchronizeRemoveOldConfig(args.LastConfigNumber)
+	if kv.hasFinishedOneReconfigNL() {
+		go kv.synchronizeRemoveOldConfig(args.LastConfigNumber)
+	}
 
 	DPrintf(kv.gid, kv.me, "MoveShards reply is %+v\n", reply)
 }
 
-func (kv *ShardKV) hasConvertedToConfigNL(configNumber int) bool {
-	return len(kv.configs) > 0 && kv.configs[0].Num >= configNumber
+func (kv *ShardKV) waitForShardRequestNL(shard int, configNumber int) bool {
+	// when partition we should response for duplicated requests
+	_, ok := kv.waitForMovingShardsRequest[shard]
+	return (len(kv.configs) > 0 && kv.configs[0].Num > configNumber) || ok
 }
 
 func (kv *ShardKV) synchronizeRemoveOldConfig(configNumber int) {
-	if !kv.hasFinishedOneReconfig() {
-		return
-	}
-
 	if kv.isRemoved(configNumber) {
 		return
 	}
@@ -618,7 +618,7 @@ func (kv *ShardKV) waitForRemovingOldConfig(number int) {
 		kv.mu.Lock()
 		newConfigNumber := 0
 		if len(kv.configs) > 0 {
-			newConfigNumber = kv.configs[len(kv.configs)-1].Num
+			newConfigNumber = kv.configs[0].Num
 		}
 		kv.mu.Unlock()
 
@@ -639,7 +639,10 @@ func (kv *ShardKV) checkConfigDiff() {
 				// todo add flag for leader waiting for commit
 				if kv.hasFinishedOneReconfig() {
 					kv.synchronizeRemoveOldConfig(oldConfig.Num)
+				} else {
+					kv.waitForRemovingOldConfig(oldConfig.Num)
 				}
+
 			}
 		}
 
@@ -737,14 +740,17 @@ func (kv *ShardKV) sendReconfigInfoNL(config shardctrler.Config, argsForGroup ma
 		timer.Stop()
 		timer.Reset(100 * time.Millisecond)
 
-		select {
-		case shard := <-ch:
-			{
-				delete(argsForGroup, shard)
-			}
-		case <-timer.C:
-			{
-				continue
+		timeout := false
+		for !timeout {
+			select {
+			case shard := <-ch:
+				{
+					delete(argsForGroup, shard)
+				}
+			case <-timer.C:
+				{
+					timeout = true
+				}
 			}
 		}
 	}
