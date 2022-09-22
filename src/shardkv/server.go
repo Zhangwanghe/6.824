@@ -83,7 +83,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 
 	if kv.isReconfiguring() {
 		DPrintf(kv.gid, kv.me, "Get isReconfiguring args = %+v\n", args)
-		reply.Err = ErrNoKey
+		reply.Err = ErrWrongOrder
 		return
 	}
 
@@ -138,7 +138,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 
 	if kv.isReconfiguring() {
 		DPrintf(kv.gid, kv.me, "PutAppend isReconfiguring args = %+v\n", args)
-		reply.Err = ErrNoKey
+		reply.Err = ErrWrongOrder
 		return
 	}
 
@@ -592,7 +592,7 @@ func (kv *ShardKV) synchronizeRemoveOldConfig(configNumber int) {
 		return
 	}
 
-	if !kv.isRemoved(configNumber) {
+	if kv.isRemoved(configNumber) {
 		return
 	}
 
