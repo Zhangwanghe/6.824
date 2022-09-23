@@ -59,18 +59,16 @@ type ShardKV struct {
 	sm           *shardctrler.Clerk
 
 	// Your definitions here.
-	dead                  int32 // set by Kill()
-	persister             *raft.Persister
-	Appliedlogs           map[int]interface{}
-	Requiredlogs          map[int]int
-	ClientKeySerialNumber map[int64]map[string]int
-	CommitIndex           int
-	checkedLeader         bool
-	KeyValues             map[string]string
-	configs               []shardctrler.Config
-
-	waitForMovingShardsRequest map[int]int
-	waitForMovingShardsReply   map[int]int
+	dead                     int32 // set by Kill()
+	persister                *raft.Persister
+	Appliedlogs              map[int]interface{}
+	Requiredlogs             map[int]int
+	ClientKeySerialNumber    map[int64]map[string]int
+	CommitIndex              int
+	checkedLeader            bool
+	KeyValues                map[string]string
+	configs                  []shardctrler.Config
+	waitForMovingShardsReply map[int]int
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
@@ -433,7 +431,6 @@ func (kv *ShardKV) makeSnapshot() {
 	e.Encode(kv.CommitIndex)
 	e.Encode(kv.KeyValues)
 	e.Encode(kv.configs)
-	e.Encode(kv.waitForMovingShardsRequest)
 	e.Encode(kv.waitForMovingShardsReply)
 	DPrintf(kv.gid, kv.me, "make snapshot from %d", kv.CommitIndex)
 	kv.rf.Snapshot(kv.CommitIndex, w.Bytes())
@@ -452,7 +449,6 @@ func (kv *ShardKV) readSnapShotNL(data []byte) {
 	var commitIndex int
 	var keyValues map[string]string
 	var configs []shardctrler.Config
-	var waitForMovingShardsRequest map[int]int
 	var waitForMovingShardsReply map[int]int
 	if d.Decode(&appliedlogs) != nil ||
 		d.Decode(&requiredlogs) != nil ||
@@ -460,7 +456,6 @@ func (kv *ShardKV) readSnapShotNL(data []byte) {
 		d.Decode(&commitIndex) != nil ||
 		d.Decode(&keyValues) != nil ||
 		d.Decode(&configs) != nil ||
-		d.Decode(&waitForMovingShardsRequest) != nil ||
 		d.Decode(&waitForMovingShardsReply) != nil {
 		return
 	} else {
@@ -470,7 +465,6 @@ func (kv *ShardKV) readSnapShotNL(data []byte) {
 		kv.CommitIndex = commitIndex
 		kv.KeyValues = keyValues
 		kv.configs = configs
-		kv.waitForMovingShardsRequest = waitForMovingShardsRequest
 		kv.waitForMovingShardsReply = waitForMovingShardsReply
 	}
 }
@@ -562,7 +556,7 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 
 	DPrintf(kv.gid, kv.me, "MoveShards args is %+v\n", args)
 	// todo when having partition, how to ensure we are contacting correct leader?
-	if !kv.isLeader() || !kv.isWaitingForShardRequestNL(args.Shard, args.LastConfigNumber) {
+	if !kv.isLeader() || !kv.shouldMovingShardsForConfigNL(args.Shard, args.LastConfigNumber) {
 		reply.Succeed = false
 		return
 	}
@@ -589,18 +583,13 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 		}
 	}
 
-	delete(kv.waitForMovingShardsRequest, args.Shard)
-	if kv.hasFinishedOneReconfigNL() {
-		go kv.startRemoveOldConfig(args.LastConfigNumber)
-	}
-
 	DPrintf(kv.gid, kv.me, "MoveShards reply is %+v\n", reply)
 }
 
-func (kv *ShardKV) isWaitingForShardRequestNL(shard int, configNumber int) bool {
+func (kv *ShardKV) shouldMovingShardsForConfigNL(shard int, configNumber int) bool {
 	// when partition we should response for duplicated requests
-	_, ok := kv.waitForMovingShardsRequest[shard]
-	return (len(kv.configs) > 0 && kv.configs[0].Num > configNumber) || ok
+	return (len(kv.configs) == 1 && kv.configs[0].Num > configNumber) ||
+		(len(kv.configs) > 1 && kv.configs[0].Num >= configNumber)
 }
 
 func (kv *ShardKV) startRemoveOldConfig(configNumber int) {
@@ -650,7 +639,7 @@ func (kv *ShardKV) hasFinishedOneReconfig() bool {
 }
 
 func (kv *ShardKV) hasFinishedOneReconfigNL() bool {
-	return len(kv.waitForMovingShardsReply) == 0 && len(kv.waitForMovingShardsRequest) == 0
+	return len(kv.waitForMovingShardsReply) == 0
 }
 
 func (kv *ShardKV) getReconfigData() (bool, shardctrler.Config, shardctrler.Config) {
@@ -686,9 +675,7 @@ func (kv *ShardKV) reconfig(oldConfig shardctrler.Config, newConfig shardctrler.
 
 	argsForGroup := make(map[int]MoveShardsArgs)
 	for i := 0; i < shardctrler.NShards; i++ {
-		if kv.gid == oldConfig.Shards[i] && kv.gid != newConfig.Shards[i] {
-			kv.addWaitForMovingShardsRequest(i)
-		} else if kv.gid != oldConfig.Shards[i] && kv.gid == newConfig.Shards[i] {
+		if kv.gid != oldConfig.Shards[i] && kv.gid == newConfig.Shards[i] {
 			args := kv.makeMoveShardArgs(oldConfig.Num, i)
 			kv.addWaitForMovingShardsReply(i)
 			argsForGroup[i] = args
@@ -706,13 +693,6 @@ func (kv *ShardKV) makeMoveShardArgs(configNumber int, shard int) MoveShardsArgs
 	args.LastConfigNumber = configNumber
 	args.Shard = shard
 	return args
-}
-
-func (kv *ShardKV) addWaitForMovingShardsRequest(shard int) {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
-	kv.waitForMovingShardsRequest[shard] = 1
 }
 
 func (kv *ShardKV) addWaitForMovingShardsReply(shard int) {
@@ -737,7 +717,7 @@ func (kv *ShardKV) sendReconfigInfoNL(config shardctrler.Config, argsForGroup ma
 						DPrintf(kv.gid, kv.me, "sendReconfigInfoNL args is %+v\n", args)
 						ok := srv.Call("ShardKV.MoveShards", &args, &reply)
 						DPrintf(kv.gid, kv.me, "sendReconfigInfoNL args is %+v reply is %+v \n", args, reply)
-						if ok && reply.Succeed {
+						if ok && reply.Succeed && kv.isConfiguringWith(args.LastConfigNumber) {
 							kv.rf.Start(kv.makeMoveShardsCtrl(args, reply))
 							ch <- args.Shard
 						}
@@ -773,6 +753,12 @@ func (kv *ShardKV) makeMoveShardsCtrl(args MoveShardsArgs, reply MoveShardsReply
 	ctrl.LastConfigNumber = args.LastConfigNumber
 
 	return ctrl
+}
+
+func (kv *ShardKV) isConfiguringWith(configNumber int) bool {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	return len(kv.configs) > 0 && kv.configs[0].Num == configNumber
 }
 
 //
@@ -842,7 +828,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.Requiredlogs = make(map[int]int)
 	kv.ClientKeySerialNumber = make(map[int64]map[string]int)
 	// todo should snapshot new field in ShardKV?
-	kv.waitForMovingShardsRequest = make(map[int]int)
 	kv.waitForMovingShardsReply = make(map[int]int)
 	kv.restoreFromSnapshot()
 
