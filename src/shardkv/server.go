@@ -431,8 +431,7 @@ func (kv *ShardKV) makeSnapshot() {
 	e.Encode(kv.CommitIndex)
 	e.Encode(kv.KeyValues)
 	e.Encode(kv.configs)
-	e.Encode(kv.waitForMovingShardsReply)
-	DPrintf(kv.gid, kv.me, "make snapshot from %d", kv.CommitIndex)
+	//DPrintf(kv.gid, kv.me, "make snapshot from %d", kv.CommitIndex)
 	kv.rf.Snapshot(kv.CommitIndex, w.Bytes())
 }
 
@@ -449,14 +448,12 @@ func (kv *ShardKV) readSnapShotNL(data []byte) {
 	var commitIndex int
 	var keyValues map[string]string
 	var configs []shardctrler.Config
-	var waitForMovingShardsReply map[int]int
 	if d.Decode(&appliedlogs) != nil ||
 		d.Decode(&requiredlogs) != nil ||
 		d.Decode(&clientKeySerialNumber) != nil ||
 		d.Decode(&commitIndex) != nil ||
 		d.Decode(&keyValues) != nil ||
-		d.Decode(&configs) != nil ||
-		d.Decode(&waitForMovingShardsReply) != nil {
+		d.Decode(&configs) != nil {
 		return
 	} else {
 		kv.Appliedlogs = appliedlogs
@@ -465,7 +462,6 @@ func (kv *ShardKV) readSnapShotNL(data []byte) {
 		kv.CommitIndex = commitIndex
 		kv.KeyValues = keyValues
 		kv.configs = configs
-		kv.waitForMovingShardsReply = waitForMovingShardsReply
 	}
 }
 
