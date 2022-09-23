@@ -69,6 +69,9 @@ type ShardKV struct {
 	KeyValues                map[string]string
 	configs                  []shardctrler.Config
 	waitForMovingShardsReply map[int]int
+
+	boot         bool
+	commandTimer *time.Timer
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
@@ -290,6 +293,12 @@ func (kv *ShardKV) readFromApplyCh() {
 	for !kv.killed() {
 		for msg := range kv.applyCh {
 			kv.mu.Lock()
+
+			if kv.boot {
+				kv.commandTimer.Stop()
+				kv.commandTimer.Reset(100 * time.Millisecond)
+			}
+
 			if msg.CommandValid {
 				kv.dealWithCommandNL(msg.CommandIndex, msg.Command)
 			} else if msg.SnapshotValid {
@@ -474,6 +483,10 @@ func (kv *ShardKV) restoreFromSnapshot() {
 }
 
 func (kv *ShardKV) checkConfig() {
+	<-kv.commandTimer.C
+	kv.commandTimer.Stop()
+	kv.boot = false
+
 	for !kv.killed() {
 		if kv.isLeader() {
 			latestConfigNumber := kv.getLatestConfigNumber()
@@ -833,6 +846,8 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
+	kv.commandTimer = time.NewTimer(100 * time.Millisecond)
+	kv.boot = true
 	go kv.readFromApplyCh()
 
 	go kv.checkLeader()
