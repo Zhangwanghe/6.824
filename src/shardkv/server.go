@@ -69,9 +69,6 @@ type ShardKV struct {
 	KeyValues                map[string]string
 	configs                  []shardctrler.Config
 	waitForMovingShardsReply map[int]int
-
-	boot         bool
-	commandTimer *time.Timer
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
@@ -294,11 +291,6 @@ func (kv *ShardKV) readFromApplyCh() {
 		for msg := range kv.applyCh {
 			kv.mu.Lock()
 
-			if kv.boot {
-				kv.commandTimer.Stop()
-				kv.commandTimer.Reset(100 * time.Millisecond)
-			}
-
 			if msg.CommandValid {
 				kv.dealWithCommandNL(msg.CommandIndex, msg.Command)
 			} else if msg.SnapshotValid {
@@ -408,10 +400,33 @@ func (kv *ShardKV) checkLeader() {
 	for !kv.killed() {
 		kv.mu.Lock()
 		if kv.isLeader() && !kv.checkedLeader {
-			kv.rf.Start(Op{})
+			kv.mu.Unlock()
+
+			index, _, _ := kv.rf.Start(Op{})
+			kv.waitForStartIndex(index)
+
+			kv.mu.Lock()
+			if kv.isLeader() {
+				go kv.checkConfig()
+				go kv.checkConfigDiff()
+			}
 		}
 		kv.checkedLeader = kv.isLeader()
 		kv.mu.Unlock()
+
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (kv *ShardKV) waitForStartIndex(index int) {
+	for !kv.killed() {
+		kv.mu.Lock()
+		commitIndex := kv.CommitIndex
+		kv.mu.Unlock()
+
+		if commitIndex >= index {
+			break
+		}
 
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -441,7 +456,7 @@ func (kv *ShardKV) makeSnapshot() {
 	e.Encode(kv.KeyValues)
 	e.Encode(kv.configs)
 	e.Encode(kv.waitForMovingShardsReply)
-	//DPrintf(kv.gid, kv.me, "make snapshot from %d", kv.CommitIndex)
+	DPrintf(kv.gid, kv.me, "make snapshot from %d with kv.KeyValues = %+v \n", kv.CommitIndex, kv.KeyValues)
 	kv.rf.Snapshot(kv.CommitIndex, w.Bytes())
 }
 
@@ -487,35 +502,19 @@ func (kv *ShardKV) restoreFromSnapshot() {
 }
 
 func (kv *ShardKV) checkConfig() {
-	kv.waitForInitialLogs()
+	for !kv.killed() && kv.isLeader() {
+		latestConfigNumber := kv.getLatestConfigNumber()
+		config := kv.sm.Query(-1)
+		for i := latestConfigNumber + 1; i <= config.Num; i++ {
+			kv.rf.Start(kv.makeReconfigCtrlNL(kv.sm.Query(i)))
+		}
 
-	for !kv.killed() {
-		if kv.isLeader() {
-			latestConfigNumber := kv.getLatestConfigNumber()
-			config := kv.sm.Query(-1)
-			for i := latestConfigNumber + 1; i <= config.Num; i++ {
-				kv.rf.Start(kv.makeReconfigCtrlNL(kv.sm.Query(i)))
-			}
-
-			if config.Num > latestConfigNumber {
-				kv.waitForAppendingConfigNumber(config.Num)
-			}
+		if config.Num > latestConfigNumber {
+			kv.waitForAppendingConfigNumber(config.Num)
 		}
 
 		time.Sleep(100 * time.Millisecond)
 	}
-}
-
-func (kv *ShardKV) waitForInitialLogs() {
-	<-kv.commandTimer.C
-
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
-	kv.commandTimer.Stop()
-	kv.boot = false
-	kv.waitForMovingShardsReply = make(map[int]int)
-	go kv.checkConfigDiff()
 }
 
 func (kv *ShardKV) getLatestConfigNumber() int {
@@ -612,7 +611,7 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 func (kv *ShardKV) shouldMovingShardsForConfigNL(shard int, configNumber int) bool {
 	// when partition we should response for duplicated requests
 	return ((len(kv.configs) == 1 && kv.configs[0].Num > configNumber) ||
-		(len(kv.configs) > 1 && kv.configs[0].Num >= configNumber)) && !kv.boot
+		(len(kv.configs) > 1 && kv.configs[0].Num >= configNumber))
 }
 
 func (kv *ShardKV) startRemoveOldConfig(configNumber int) {
@@ -860,8 +859,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.applyCh = make(chan raft.ApplyMsg)
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
-	kv.commandTimer = time.NewTimer(100 * time.Millisecond)
-	kv.boot = true
 	go kv.readFromApplyCh()
 
 	go kv.checkLeader()
@@ -869,8 +866,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	if kv.maxraftstate != -1 {
 		go kv.checkSnapshot()
 	}
-
-	go kv.checkConfig()
 
 	return kv
 }
