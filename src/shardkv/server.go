@@ -698,7 +698,7 @@ func (kv *ShardKV) askForMoveShardsAndWait(shard int) {
 			case <-ch:
 				{
 					success = true
-					close(ch)
+					// todo close chan
 				}
 			case <-timer.C:
 				{
