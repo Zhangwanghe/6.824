@@ -129,8 +129,8 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	// Your code here.
 	ok := sc.hasExecuted(args.Client, args.SerialNumber)
 	if ok {
-		DPrintf(sc.me, "Query hasExecuted\n")
-		reply.Config = sc.QueryConfig(args.SerialNumber)
+		DPrintf(sc.me, "Query hasExecuted  args = %+v\n", args)
+		reply.Config = sc.QueryConfig(args.Num)
 		return
 	}
 
@@ -337,7 +337,6 @@ func (sc *ShardCtrler) rebalance(gids []int) {
 		newGroupId = append(newGroupId, 0)
 	}
 	newGroupShardNum := sc.getShardNumForGroups(len(newGroupId))
-
 
 	oldGroupToShardNumMap := makeMap(usedGroupId, usedGroupShardNum)
 	newGroupToShardNumMap := makeMap(newGroupId, newGroupShardNum)
