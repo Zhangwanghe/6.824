@@ -79,7 +79,7 @@ func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) {
 		return
 	}
 
-	if kv.isReconfiguring() {
+	if kv.isReconfiguring(args.Key) {
 		DPrintf(kv.gid, kv.me, "Get isReconfiguring args = %+v\n", args)
 		reply.Err = ErrWrongOrder
 		return
@@ -134,7 +134,7 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 		return
 	}
 
-	if kv.isReconfiguring() {
+	if kv.isReconfiguring(args.Key) {
 		DPrintf(kv.gid, kv.me, "PutAppend isReconfiguring args = %+v\n", args)
 		reply.Err = ErrWrongOrder
 		return
@@ -215,11 +215,11 @@ func (kv *ShardKV) keyInGroupNL(key string) bool {
 	return gid == kv.gid
 }
 
-func (kv *ShardKV) isReconfiguring() bool {
+func (kv *ShardKV) isReconfiguring(key string) bool {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	return len(kv.configs) > 1
+	return kv.shardConfigNumber[key2shard(key)] != kv.configs[len(kv.configs)-1].Num
 }
 
 func (kv *ShardKV) startAndWaitForOp(op Op) Err {
