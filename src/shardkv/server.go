@@ -337,8 +337,7 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 	ctrl, ok := command.(Ctrl)
 	if ok {
 		if ctrl.CtrlType == "Reconfig" {
-			DPrintf(kv.gid, kv.me, "append config is %d\n", ctrl.Config)
-			kv.configs = append(kv.configs, ctrl.Config)
+			kv.reconfigNL(ctrl.Config)
 		} else if ctrl.CtrlType == "MoveShards" {
 			kv.moveShardsNL(ctrl.Shard, ctrl.MoveShardReply)
 		} else if ctrl.CtrlType == "RemoveOldConfig" {
@@ -359,6 +358,19 @@ func (kv *ShardKV) AppendValNL(key string, val string) {
 	}
 
 	kv.KeyValues[key] += val
+}
+
+func (kv *ShardKV) reconfigNL(config shardctrler.Config) {
+	DPrintf(kv.gid, kv.me, "append config is %d\n", config)
+	kv.configs = append(kv.configs, config)
+
+	if config.Num > 1 {
+		return
+	}
+
+	for i := 0; i < shardctrler.NShards; i++ {
+		kv.shardConfigNumber[i] = 1
+	}
 }
 
 func (kv *ShardKV) moveShardsNL(shard int, reply MoveShardsReply) {
@@ -457,7 +469,11 @@ func (kv *ShardKV) makeSnapshot() {
 	e.Encode(kv.ClientKeySerialNumber)
 	e.Encode(kv.CommitIndex)
 	e.Encode(kv.KeyValues)
-	e.Encode(kv.configs)
+	configNumber := 0
+	if len(kv.configs) > 0 {
+		configNumber = kv.configs[len(kv.configs)-1].Num
+	}
+	e.Encode(configNumber)
 	e.Encode(kv.shardConfigNumber)
 	DPrintf(kv.gid, kv.me, "make snapshot from %d with kv.KeyValues = %+v kv.shardConfigNumber = %+v \n", kv.CommitIndex, kv.KeyValues, kv.shardConfigNumber)
 	kv.rf.Snapshot(kv.CommitIndex, w.Bytes())
@@ -475,14 +491,14 @@ func (kv *ShardKV) readSnapShotNL(data []byte) {
 	var clientKeySerialNumber map[int64]map[string]int
 	var commitIndex int
 	var keyValues map[string]string
-	var configs []shardctrler.Config
+	var configNumber int
 	var shardConfigNumber map[int]int
 	if d.Decode(&appliedlogs) != nil ||
 		d.Decode(&requiredlogs) != nil ||
 		d.Decode(&clientKeySerialNumber) != nil ||
 		d.Decode(&commitIndex) != nil ||
 		d.Decode(&keyValues) != nil ||
-		d.Decode(&configs) != nil ||
+		d.Decode(&configNumber) != nil ||
 		d.Decode(&shardConfigNumber) != nil {
 		return
 	} else {
@@ -491,7 +507,9 @@ func (kv *ShardKV) readSnapShotNL(data []byte) {
 		kv.ClientKeySerialNumber = clientKeySerialNumber
 		kv.CommitIndex = commitIndex
 		kv.KeyValues = keyValues
-		kv.configs = configs
+		for i := 1; i <= configNumber; i++ {
+			kv.configs = append(kv.configs, kv.sm.Query(i))
+		}
 		kv.shardConfigNumber = shardConfigNumber
 	}
 }
@@ -581,7 +599,6 @@ func (kv *ShardKV) MoveShards(args *MoveShardsArgs, reply *MoveShardsReply) {
 	defer kv.mu.Unlock()
 
 	DPrintf(kv.gid, kv.me, "MoveShards args is %+v\n", args)
-	// todo when having partition, how to ensure we are contacting correct leader?
 	if !kv.isLeader() || !kv.shouldMovingShardsForConfigNL(args.Shard, args.LastConfigNumber) {
 		reply.Succeed = false
 		return
@@ -645,12 +662,7 @@ func (kv *ShardKV) checkInitialConfig(shard int) bool {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	if kv.shardConfigNumber[shard] == 0 {
-		kv.shardConfigNumber[shard] = 1
-		return true
-	}
-
-	return false
+	return kv.shardConfigNumber[shard] == 0
 }
 
 func (kv *ShardKV) shouldAskForMoveShards(shard int) bool {
@@ -677,7 +689,7 @@ func (kv *ShardKV) askForMoveShardsAndWait(shard int) {
 			if servers, ok := oldConfig.Groups[oldConfig.Shards[args.Shard]]; ok {
 				for si := 0; si < len(servers); si++ {
 					srv := kv.make_end(servers[si])
-					go func(args MoveShardsArgs) {
+					go func(srv *labrpc.ClientEnd, args MoveShardsArgs) {
 						var reply MoveShardsReply
 						DPrintf(kv.gid, kv.me, "sendReconfigInfoNL args is %+v\n", args)
 						ok := srv.Call("ShardKV.MoveShards", &args, &reply)
@@ -686,7 +698,7 @@ func (kv *ShardKV) askForMoveShardsAndWait(shard int) {
 							kv.rf.Start(kv.makeMoveShardsCtrl(args.Shard, reply))
 							ch <- args.Shard
 						}
-					}(args)
+					}(srv, args)
 				}
 			}
 
@@ -891,7 +903,6 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister,
 	kv.Appliedlogs = make(map[int]interface{})
 	kv.Requiredlogs = make(map[int]int)
 	kv.ClientKeySerialNumber = make(map[int64]map[string]int)
-	// todo should snapshot new field in ShardKV?
 	kv.shardConfigNumber = make(map[int]int)
 	kv.restoreFromSnapshot()
 
