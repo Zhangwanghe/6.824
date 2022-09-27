@@ -668,14 +668,19 @@ func (kv *ShardKV) checkConfigDiff() {
 					}
 
 					kv.askForMoveShardsAndWait(shard)
-					if ok, number := kv.shouldRemoveOldConfig(); ok {
-						kv.startAndWaitForRemoveOldConfig(number)
-					}
 				} else {
 					time.Sleep(10 * time.Millisecond)
 				}
 			}
 		}(i)
+	}
+
+	for !kv.killed() {
+		if ok, number := kv.shouldRemoveOldConfig(); ok {
+			kv.startAndWaitForRemoveOldConfig(number)
+		} else {
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 }
 
@@ -812,6 +817,10 @@ func (kv *ShardKV) waitForRemovingOldShard(shard int, configNumber int) {
 func (kv *ShardKV) shouldRemoveOldConfig() (bool, int) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+
+	if len(kv.configs) == 0 {
+		return false, 0
+	}
 
 	minConfig := 1000000000
 	for _, configNumber := range kv.shardConfigNumber {
