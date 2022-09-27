@@ -393,7 +393,7 @@ func (kv *ShardKV) moveShardsNL(shard int, reply MoveShardsReply) {
 
 func (kv *ShardKV) updateShardConfigNumberNL(shard int, number int) {
 	kv.shardConfigNumber[shard] = raft.Max(kv.shardConfigNumber[shard], number)
-	DPrintf(kv.gid, kv.me, "update shard %d to %d\n", shard, number)
+	DPrintf(kv.gid, kv.me, "update shard %d to %d\n", shard, kv.shardConfigNumber[shard])
 }
 
 func (kv *ShardKV) removeOldConfigNL(configNumber int) {
@@ -431,9 +431,8 @@ func (kv *ShardKV) removeShardNL(configNumber int, shards [shardctrler.NShards]i
 }
 
 func (kv *ShardKV) dealWithSnapShotNL(snapshot []byte, snapshotIndex int) {
-	DPrintf(kv.gid, kv.me, "receiev snapshot is %+v with index %d\n", snapshot, snapshotIndex)
-
 	kv.readSnapShotNL(snapshot)
+	DPrintf(kv.gid, kv.me, "recieve snapshot is %+v kv.shardConfigNumber = %+v kv.ClientKeySerialNumber = %+v snapshotIndex = %d\n", kv.KeyValues, kv.shardConfigNumber, kv.ClientKeySerialNumber, snapshotIndex)
 	kv.CommitIndex = snapshotIndex
 }
 
@@ -541,7 +540,7 @@ func (kv *ShardKV) restoreFromSnapshot() {
 	defer kv.mu.Unlock()
 
 	kv.readSnapShotNL(kv.persister.ReadSnapshot())
-	DPrintf(kv.gid, kv.me, "recovered snapshot is %+v and kv.shardConfigNumber = %+v\n", kv.KeyValues, kv.shardConfigNumber)
+	DPrintf(kv.gid, kv.me, "recovered snapshot is %+v and kv.shardConfigNumber = %+v kv.ClientKeySerialNumber = %+v\n", kv.KeyValues, kv.shardConfigNumber, kv.ClientKeySerialNumber)
 }
 
 func (kv *ShardKV) checkConfig() {
@@ -701,6 +700,11 @@ func (kv *ShardKV) shouldAskForMoveShards(shard int) bool {
 func (kv *ShardKV) askForMoveShardsAndWait(shard int) {
 	DPrintf(kv.gid, kv.me, "askForMoveShardsAndWait %d \n", shard)
 	oldConfig, newConfig := kv.findNextConfigForShard(shard)
+	if oldConfig.Num == 0 {
+		// has been removed due to high config when moving shards
+		return
+	}
+
 	if !kv.needMoveShard(shard, oldConfig, newConfig) {
 		var reply MoveShardsReply
 		reply.ShardConfigNumber = newConfig.Num
@@ -751,6 +755,7 @@ func (kv *ShardKV) askForMoveShardsAndWait(shard int) {
 	}
 
 	kv.waitForRemovingOldShard(shard, newConfig.Num)
+	DPrintf(kv.gid, kv.me, "askForMoveShardsAndWait %d finish\n", shard)
 }
 
 func (kv *ShardKV) findNextConfigForShard(shard int) (shardctrler.Config, shardctrler.Config) {
@@ -763,6 +768,10 @@ func (kv *ShardKV) findNextConfigForShard(shard int) (shardctrler.Config, shardc
 			index = i
 			break
 		}
+	}
+
+	if index == -1 {
+		return shardctrler.Config{}, shardctrler.Config{}
 	}
 
 	return kv.configs[index-1], kv.configs[index]
@@ -869,21 +878,24 @@ func (kv *ShardKV) GetShardConfigNumber(args *GetShardConfigNumberArgs, reply *G
 
 func (kv *ShardKV) checkDeleteUselessShard() {
 	for !kv.killed() && kv.isLeader() {
-		if shards := kv.getUselessShard(); len(shards) > 0 {
-			kv.deleteUselessShard(kv.configs[0], shards)
+		if config, shards := kv.getUselessShardForConfig(); len(shards) > 0 {
+			kv.deleteUselessShard(config, shards)
 		} else {
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
 }
 
-func (kv *ShardKV) getUselessShard() map[int]int {
+func (kv *ShardKV) getUselessShardForConfig() (shardctrler.Config, map[int]int) {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
 	shards := make(map[int]int)
+	var config shardctrler.Config
 
 	if len(kv.configs) == 1 {
+		config = kv.configs[0]
+
 		for k, _ := range kv.KeyValues {
 			if kv.configs[0].Shards[key2shard(k)] != kv.gid {
 				shards[key2shard(k)] = 1
@@ -899,7 +911,7 @@ func (kv *ShardKV) getUselessShard() map[int]int {
 		}
 	}
 
-	return shards
+	return config, shards
 }
 
 func (kv *ShardKV) deleteUselessShard(config shardctrler.Config, shards map[int]int) {
