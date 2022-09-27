@@ -7,6 +7,7 @@ package shardctrler
 import (
 	"crypto/rand"
 	"math/big"
+	"sync/atomic"
 	"time"
 
 	"6.824/labrpc"
@@ -15,7 +16,7 @@ import (
 type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// Your data here.
-	serialNumber int
+	serialNumber int32
 	clientId     int64
 }
 
@@ -31,7 +32,6 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.servers = servers
 	// Your code here.
 	ck.clientId = nrand()
-	ck.serialNumber = 1
 	return ck
 }
 
@@ -40,8 +40,7 @@ func (ck *Clerk) Query(num int) Config {
 	// Your code here.
 	args.Num = num
 	args.Client = ck.clientId
-	args.SerialNumber = ck.serialNumber
-	ck.serialNumber++
+	args.SerialNumber = (int)(atomic.AddInt32(&ck.serialNumber, 1))
 
 	for {
 		// try each known server.
@@ -61,8 +60,7 @@ func (ck *Clerk) Join(servers map[int][]string) {
 	// Your code here.
 	args.Servers = servers
 	args.Client = ck.clientId
-	args.SerialNumber = ck.serialNumber
-	ck.serialNumber++
+	args.SerialNumber = (int)(atomic.AddInt32(&ck.serialNumber, 1))
 
 	for {
 		// try each known server.
@@ -82,8 +80,7 @@ func (ck *Clerk) Leave(gids []int) {
 	// Your code here.
 	args.GIDs = gids
 	args.Client = ck.clientId
-	args.SerialNumber = ck.serialNumber
-	ck.serialNumber++
+	args.SerialNumber = (int)(atomic.AddInt32(&ck.serialNumber, 1))
 
 	for {
 		// try each known server.
@@ -104,8 +101,7 @@ func (ck *Clerk) Move(shard int, gid int) {
 	args.Shard = shard
 	args.GID = gid
 	args.Client = ck.clientId
-	args.SerialNumber = ck.serialNumber
-	ck.serialNumber++
+	args.SerialNumber = (int)(atomic.AddInt32(&ck.serialNumber, 1))
 
 	for {
 		// try each known server.

@@ -3,6 +3,7 @@ package kvraft
 import (
 	"crypto/rand"
 	"math/big"
+	"sync/atomic"
 	"time"
 
 	"6.824/labrpc"
@@ -12,7 +13,7 @@ type Clerk struct {
 	servers []*labrpc.ClientEnd
 	// You will have to modify this struct.
 	leaderId     int
-	serialNumber int
+	serialNumber int32
 	clientId     int64
 }
 
@@ -29,7 +30,6 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 	ck.servers = servers
 	ck.leaderId = -1
 	ck.clientId = nrand()
-	ck.serialNumber = 1
 	return ck
 }
 
@@ -47,8 +47,7 @@ func MakeClerk(servers []*labrpc.ClientEnd) *Clerk {
 //
 func (ck *Clerk) Get(key string) string {
 	// You will have to modify this function.
-	args := GetArgs{key, ck.clientId, ck.serialNumber}
-	ck.serialNumber++
+	args := GetArgs{key, ck.clientId, (int)(atomic.AddInt32(&ck.serialNumber, 1))}
 
 	for {
 		// todo add lock for this leaderId?
@@ -86,8 +85,7 @@ func (ck *Clerk) Get(key string) string {
 func (ck *Clerk) PutAppend(key string, value string, op string) {
 	// You will have to modify this function.
 
-	args := PutAppendArgs{key, value, op, ck.clientId, ck.serialNumber}
-	ck.serialNumber++
+	args := PutAppendArgs{key, value, op, ck.clientId, (int)(atomic.AddInt32(&ck.serialNumber, 1))}
 
 	for {
 		if ck.leaderId != -1 {
