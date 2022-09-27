@@ -342,6 +342,8 @@ func (kv *ShardKV) dealWithCommandNL(commandIndex int, command interface{}) {
 			kv.moveShardsNL(ctrl.Shard, ctrl.MoveShardReply)
 		} else if ctrl.CtrlType == "RemoveOldConfig" {
 			kv.removeOldConfigNL(ctrl.LastConfigNumber)
+		} else if ctrl.CtrlType == "RemoveShard" {
+			kv.removeShardNL(ctrl.LastConfigNumber, ctrl.Config.Shards)
 		}
 	}
 }
@@ -403,6 +405,31 @@ func (kv *ShardKV) removeOldConfigNL(configNumber int) {
 	kv.configs = kv.configs[1:]
 }
 
+func (kv *ShardKV) removeShardNL(configNumber int, shards [shardctrler.NShards]int) {
+	if len(kv.configs) != 1 || configNumber != kv.configs[0].Num {
+		DPrintf(kv.gid, kv.me, "removeShardNL kv.configs = %+v \n", kv.configs)
+		return
+	}
+
+	DPrintf(kv.gid, kv.me, "removeShardNL %+v for %+v \n", shards, kv.configs[0])
+
+	for key, _ := range kv.KeyValues {
+		if shards[key2shard(key)] == 1 {
+			delete(kv.KeyValues, key)
+		}
+	}
+
+	for client, keySerial := range kv.ClientKeySerialNumber {
+		for key, _ := range keySerial {
+			if shards[key2shard(key)] == 1 {
+				delete(kv.ClientKeySerialNumber[client], key)
+			}
+		}
+	}
+
+	DPrintf(kv.gid, kv.me, "after removeShardNL kv.KeyValues = %+v kv.ClientKeySerialNumber = %+v \n", kv.KeyValues, kv.ClientKeySerialNumber)
+}
+
 func (kv *ShardKV) dealWithSnapShotNL(snapshot []byte, snapshotIndex int) {
 	DPrintf(kv.gid, kv.me, "receiev snapshot is %+v with index %d\n", snapshot, snapshotIndex)
 
@@ -423,6 +450,7 @@ func (kv *ShardKV) checkLeader() {
 			if kv.isLeader() {
 				go kv.checkConfig()
 				go kv.checkConfigDiff()
+				go kv.checkDeleteUselessShard()
 			}
 		}
 		kv.checkedLeader = kv.isLeader()
@@ -469,11 +497,7 @@ func (kv *ShardKV) makeSnapshot() {
 	e.Encode(kv.ClientKeySerialNumber)
 	e.Encode(kv.CommitIndex)
 	e.Encode(kv.KeyValues)
-	configNumber := 0
-	if len(kv.configs) > 0 {
-		configNumber = kv.configs[len(kv.configs)-1].Num
-	}
-	e.Encode(configNumber)
+	e.Encode(kv.configs)
 	e.Encode(kv.shardConfigNumber)
 	DPrintf(kv.gid, kv.me, "make snapshot from %d with kv.KeyValues = %+v kv.shardConfigNumber = %+v \n", kv.CommitIndex, kv.KeyValues, kv.shardConfigNumber)
 	kv.rf.Snapshot(kv.CommitIndex, w.Bytes())
@@ -491,14 +515,14 @@ func (kv *ShardKV) readSnapShotNL(data []byte) {
 	var clientKeySerialNumber map[int64]map[string]int
 	var commitIndex int
 	var keyValues map[string]string
-	var configNumber int
+	var configs []shardctrler.Config
 	var shardConfigNumber map[int]int
 	if d.Decode(&appliedlogs) != nil ||
 		d.Decode(&requiredlogs) != nil ||
 		d.Decode(&clientKeySerialNumber) != nil ||
 		d.Decode(&commitIndex) != nil ||
 		d.Decode(&keyValues) != nil ||
-		d.Decode(&configNumber) != nil ||
+		d.Decode(&configs) != nil ||
 		d.Decode(&shardConfigNumber) != nil {
 		return
 	} else {
@@ -507,9 +531,7 @@ func (kv *ShardKV) readSnapShotNL(data []byte) {
 		kv.ClientKeySerialNumber = clientKeySerialNumber
 		kv.CommitIndex = commitIndex
 		kv.KeyValues = keyValues
-		for i := 1; i <= configNumber; i++ {
-			kv.configs = append(kv.configs, kv.sm.Query(i))
-		}
+		kv.configs = configs
 		kv.shardConfigNumber = shardConfigNumber
 	}
 }
@@ -835,6 +857,132 @@ func (kv *ShardKV) waitForRemovingOldConfig(number int) {
 
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+type GetShardConfigNumberArgs struct {
+	Shard int
+}
+
+type GetShardConfigNumberReply struct {
+	ConfigNumber int
+}
+
+func (kv *ShardKV) GetShardConfigNumber(args *GetShardConfigNumberArgs, reply *GetShardConfigNumberReply) {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	reply.ConfigNumber = kv.shardConfigNumber[args.Shard]
+	DPrintf(kv.gid, kv.me, "GetShardConfigNumber args = %+v, reply = %+v\n", args, reply)
+}
+
+func (kv *ShardKV) checkDeleteUselessShard() {
+	for !kv.killed() && kv.isLeader() {
+		if shards := kv.getUselessShard(); len(shards) > 0 {
+			kv.deleteUselessShard(kv.configs[0], shards)
+		} else {
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+}
+
+func (kv *ShardKV) getUselessShard() map[int]int {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	shards := make(map[int]int)
+
+	if len(kv.configs) == 1 {
+		for k, _ := range kv.KeyValues {
+			if kv.configs[0].Shards[key2shard(k)] != kv.gid {
+				shards[key2shard(k)] = 1
+			}
+		}
+
+		for _, ks := range kv.ClientKeySerialNumber {
+			for k, _ := range ks {
+				if kv.configs[0].Shards[key2shard(k)] != kv.gid {
+					shards[key2shard(k)] = 1
+				}
+			}
+		}
+	}
+
+	return shards
+}
+
+func (kv *ShardKV) deleteUselessShard(config shardctrler.Config, shards map[int]int) {
+	DPrintf(kv.gid, kv.me, "deleteUselessShard %+v for %+v \n", shards, config)
+
+	for !kv.killed() && kv.getLatestConfigNumber() == config.Num {
+		timer := time.NewTimer(100 * time.Millisecond)
+		defer timer.Stop()
+		waitNum := len(shards)
+		bch := make(chan int, shardctrler.NShards)
+
+		for shard, _ := range shards {
+			go func(shard int) {
+				ch := make(chan int)
+				args := GetShardConfigNumberArgs{shard}
+
+				if servers, ok := config.Groups[config.Shards[shard]]; ok {
+					for si := 0; si < len(servers); si++ {
+						srv := kv.make_end(servers[si])
+						go func(srv *labrpc.ClientEnd) {
+							var reply GetShardConfigNumberReply
+							DPrintf(kv.gid, kv.me, "checkDeleteUselessKey args is %+v\n", args)
+							ok := srv.Call("ShardKV.GetShardConfigNumber", &args, &reply)
+							DPrintf(kv.gid, kv.me, "checkDeleteUselessKey args is %+v reply is %+v \n", args, reply)
+							if ok && reply.ConfigNumber == config.Num {
+								ch <- args.Shard
+							}
+						}(srv)
+					}
+				}
+
+				<-ch
+				bch <- shard
+			}(shard)
+		}
+
+		if waitNum != 0 {
+			timer.Stop()
+			timer.Reset(100 * time.Millisecond)
+
+			timeout := false
+			for !kv.killed() && !timeout && waitNum > 0 {
+				select {
+				case <-bch:
+					{
+						waitNum--
+					}
+				case <-timer.C:
+					{
+						timeout = true
+					}
+				}
+			}
+		}
+
+		if waitNum == 0 {
+			index, _, _ := kv.rf.Start(kv.makeRemoveShardArgs(config.Num, shards))
+			kv.waitForStartIndex(index)
+			break
+		}
+	}
+
+	for !kv.killed() && kv.getLatestConfigNumber() == config.Num {
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (kv *ShardKV) makeRemoveShardArgs(configNumber int, shards map[int]int) Ctrl {
+	ctrl := Ctrl{}
+	ctrl.CtrlType = "RemoveShard"
+	for shard, _ := range shards {
+		ctrl.Config.Shards[shard] = 1
+	}
+	ctrl.LastConfigNumber = configNumber
+	return ctrl
 }
 
 //
