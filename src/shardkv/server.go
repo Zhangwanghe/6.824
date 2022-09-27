@@ -499,7 +499,7 @@ func (kv *ShardKV) makeSnapshot() {
 	e.Encode(kv.KeyValues)
 	e.Encode(kv.configs)
 	e.Encode(kv.shardConfigNumber)
-	DPrintf(kv.gid, kv.me, "make snapshot from %d with kv.KeyValues = %+v kv.shardConfigNumber = %+v \n", kv.CommitIndex, kv.KeyValues, kv.shardConfigNumber)
+	//DPrintf(kv.gid, kv.me, "make snapshot from %d with kv.KeyValues = %+v kv.shardConfigNumber = %+v \n", kv.CommitIndex, kv.KeyValues, kv.shardConfigNumber)
 	kv.rf.Snapshot(kv.CommitIndex, w.Bytes())
 }
 
@@ -669,8 +669,7 @@ func (kv *ShardKV) checkConfigDiff() {
 
 					kv.askForMoveShardsAndWait(shard)
 					if ok, number := kv.shouldRemoveOldConfig(); ok {
-						kv.startRemoveOldConfig(number)
-						kv.waitForRemovingOldConfig(number)
+						kv.startAndWaitForRemoveOldConfig(number)
 					}
 				} else {
 					time.Sleep(10 * time.Millisecond)
@@ -822,17 +821,18 @@ func (kv *ShardKV) shouldRemoveOldConfig() (bool, int) {
 	return minConfig > kv.configs[0].Num, kv.configs[0].Num
 }
 
-func (kv *ShardKV) startRemoveOldConfig(configNumber int) {
+func (kv *ShardKV) startAndWaitForRemoveOldConfig(configNumber int) {
 	if kv.isRemoved(configNumber) {
 		return
 	}
 
-	DPrintf(kv.gid, kv.me, "startRemoveOldConfig %+v\n", configNumber)
+	DPrintf(kv.gid, kv.me, "startAndWaitForRemoveOldConfig %+v\n", configNumber)
 
 	var ctrl Ctrl
 	ctrl.CtrlType = "RemoveOldConfig"
 	ctrl.LastConfigNumber = configNumber
-	kv.rf.Start(ctrl)
+	index, _, _ := kv.rf.Start(ctrl)
+	kv.waitForStartIndex(index)
 }
 
 func (kv *ShardKV) isRemoved(configNumber int) bool {
@@ -840,23 +840,6 @@ func (kv *ShardKV) isRemoved(configNumber int) bool {
 	defer kv.mu.Unlock()
 
 	return len(kv.configs) > 0 && kv.configs[0].Num != configNumber
-}
-
-func (kv *ShardKV) waitForRemovingOldConfig(number int) {
-	for !kv.killed() {
-		kv.mu.Lock()
-		newConfigNumber := 0
-		if len(kv.configs) > 0 {
-			newConfigNumber = kv.configs[0].Num
-		}
-		kv.mu.Unlock()
-
-		if number != newConfigNumber {
-			break
-		}
-
-		time.Sleep(10 * time.Millisecond)
-	}
 }
 
 type GetShardConfigNumberArgs struct {
