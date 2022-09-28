@@ -430,6 +430,8 @@ func (rf *Raft) InstallSnapShot(args *InstallSnapShotArgs, reply *InstallSnapSho
 	rf.log.StartIndex = args.LastIncludedIndex
 	rf.log.Logs[0].Term = args.LastIncludedTerm
 
+	rf.persistStateAndSnapshotNL()
+
 	MyDebug(dSnap, rf.me, "InstallSnapShot reply are : %+v", reply)
 }
 
