@@ -439,7 +439,8 @@ func (kv *ShardKV) dealWithSnapShotNL(snapshot []byte, snapshotIndex int) {
 func (kv *ShardKV) checkLeader() {
 	for !kv.killed() {
 		kv.mu.Lock()
-		if kv.isLeader() && !kv.checkedLeader {
+		leader := kv.isLeader()
+		if leader && !kv.checkedLeader {
 			kv.mu.Unlock()
 
 			index, _, _ := kv.rf.Start(Op{})
@@ -452,7 +453,7 @@ func (kv *ShardKV) checkLeader() {
 				go kv.checkDeleteUselessShard()
 			}
 		}
-		kv.checkedLeader = kv.isLeader()
+		kv.checkedLeader = leader
 		kv.mu.Unlock()
 
 		time.Sleep(10 * time.Millisecond)
